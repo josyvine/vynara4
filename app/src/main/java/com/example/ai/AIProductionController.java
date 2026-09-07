@@ -3,6 +3,8 @@ package com.example.ai;
 import android.content.Context;
 import android.net.Uri;
 
+import com.example.ai.agents.DirectorAgent;
+import com.example.ai.protocol.AIDirectorSpec;
 import com.example.ai.protocol.AIProductionRequest;
 import com.example.character.CharacterManager;
 import com.example.cloud.CloudProvider;
@@ -37,7 +39,8 @@ public class AIProductionController {
     private final ExecutionEngine executionEngine;
     private final AIOrchestrator orchestrator;
 
-    // Solution B: AI Script Corrector subsystem
+    // Director Agent & Self-Correction Subsystems
+    private final DirectorAgent directorAgent;
     private final AICorrector aiCorrector;
 
     private static final int MAX_REPAIR_ATTEMPTS = 2;
@@ -63,7 +66,8 @@ public class AIProductionController {
         this.executionEngine = runtime.getExecutionEngine();
         this.orchestrator = new AIOrchestrator(apiClient, apiKeyManager, knowledgeManager);
 
-        // Solution B: Bind AICorrector safely without referencing non-existent engine methods
+        // Director Agent & AICorrector
+        this.directorAgent = new DirectorAgent(this.apiClient, this.apiKeyManager);
         this.aiCorrector = new AICorrector(this.toolExecutor, this.orchestrator, null);
     }
 
@@ -191,6 +195,42 @@ public class AIProductionController {
         });
     }
 
+    /**
+     * VISUAL REFINEMENT LOOP: Compares the rendered Cycles preview snapshot (render.png)
+     * against the reference goal to visually diagnose and refine the Blender script.
+     */
+    public void visuallyCritiqueAndRefine(String userPrompt,
+                                          String currentScript,
+                                          File referenceImageFile,
+                                          File renderPreviewFile,
+                                          final GeminiApiClient.ApiCallback<String> callback) {
+        if (aiCorrector == null) {
+            if (callback != null) callback.onError("AICorrector subsystem is not initialized.");
+            return;
+        }
+        VynaraLogger.system("AIProductionController: Triggering multimodal visual critique loop...");
+        aiCorrector.critiqueAndRefineBlenderScript(userPrompt, currentScript, referenceImageFile, renderPreviewFile, callback);
+    }
+
+    public String visuallyCritiqueAndRefineSync(String userPrompt,
+                                                String currentScript,
+                                                File referenceImageFile,
+                                                File renderPreviewFile) {
+        if (aiCorrector == null) return null;
+        return aiCorrector.critiqueAndRefineBlenderScriptSync(userPrompt, currentScript, referenceImageFile, renderPreviewFile);
+    }
+
+    public File getFirstReferenceImageFile(List<String> resolvedUris) {
+        if (resolvedUris != null && !resolvedUris.isEmpty()) {
+            String path = resolvedUris.get(0);
+            if (path != null && !path.trim().isEmpty()) {
+                File f = new File(path);
+                if (f.exists() && f.length() > 0) return f;
+            }
+        }
+        return null;
+    }
+
     public int getCurrentCorrectionAttempt() {
         return currentCorrectionAttempt;
     }
@@ -203,7 +243,7 @@ public class AIProductionController {
      * Resolves content:// URIs from the Android system photo picker into local cache files,
      * ensuring Gemini Vision can read the actual image bytes.
      */
-    private List<String> resolveReferenceUris(List<String> uris) {
+    public List<String> resolveReferenceUris(List<String> uris) {
         List<String> resolved = new ArrayList<>();
         if (uris == null || uris.isEmpty()) return resolved;
 
@@ -257,4 +297,5 @@ public class AIProductionController {
     public AIOrchestrator getOrchestrator() { return orchestrator; }
     public ProductionPlan getCurrentPlan() { return currentPlan; }
     public AICorrector getAiCorrector() { return aiCorrector; }
+    public DirectorAgent getDirectorAgent() { return directorAgent; }
 }
