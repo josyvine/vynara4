@@ -13,14 +13,19 @@ import com.example.knowledge.KnowledgeManager;
 import com.example.runtime.ProjectRuntime;
 import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
+import com.example.tasks.TaskGraph;
+import com.example.tasks.TaskNode;
 import com.example.tools.ToolExecutor;
+import com.example.tools.ToolOperation;
 import com.example.tools.ToolRegistry;
 import com.example.utils.VynaraLogger;
 import com.example.validation.ValidationManager;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -81,13 +86,22 @@ public class AIProductionController {
         }
 
         List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
+
+        // Check if a custom Python script was attached
+        String customScriptPath = findCustomScriptPath(resolvedUris);
+        if (customScriptPath != null) {
+            VynaraLogger.system("AIProductionController: Custom Python script detected. Bypassing AI generation.");
+            currentPlan = buildCustomScriptPlan(customScriptPath, userPrompt, engine);
+            return currentPlan;
+        }
+
         currentPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
         return currentPlan;
     }
 
     /**
-     * CORE PIPELINE: Asynchronously requests an intelligent, structured 3D production plan
-     * directly from the selected Gemini model, utilizing active knowledge bases and reference images.
+     * CORE PIPELINE: Asynchronously requests an intelligent, structured 3D production plan.
+     * If a custom .py script is present, immediately bypasses Gemini planning and dispatches the script directly.
      */
     public void generatePlanWithGemini(String userPrompt, String style, String engine, List<String> referenceImageUris, final GeminiApiClient.ApiCallback<ProductionPlan> callback) {
         if (callback == null) return;
@@ -99,6 +113,16 @@ public class AIProductionController {
 
         List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
 
+        // Direct Custom Script Execution: Bypasses Gemini planning if a .py script is attached
+        String customScriptPath = findCustomScriptPath(resolvedUris);
+        if (customScriptPath != null) {
+            VynaraLogger.system("AIProductionController: Custom Python script detected [" + customScriptPath + "]. Direct execution engaged.");
+            ProductionPlan scriptPlan = buildCustomScriptPlan(customScriptPath, userPrompt, engine);
+            this.currentPlan = scriptPlan;
+            callback.onSuccess(scriptPlan);
+            return;
+        }
+
         AIProductionRequest request = new AIProductionRequest(userPrompt, style, engine);
         if (resolvedUris != null) {
             for (String uri : resolvedUris) {
@@ -106,7 +130,7 @@ public class AIProductionController {
             }
         }
 
-        // Query the live, registered Gemini model
+        // Query the live, registered Gemini model for prompt-driven generation
         orchestrator.planProductionWithGemini(request, new GeminiApiClient.ApiCallback<ProductionPlan>() {
             @Override
             public void onSuccess(ProductionPlan plan) {
@@ -153,8 +177,7 @@ public class AIProductionController {
 
     /**
      * SOLUTION B: Self-Correction Pipeline Trigger
-     * Intercepts execution failures from GitHub Actions runner, requests single-turn Python script repair
-     * from Gemini with the terminal traceback, and logs status before re-dispatching Attempt 2.
+     * Supports prompt-free repair when custom scripts hit unexpected runtime errors.
      */
     public void repairBlenderScript(String userPrompt,
                                     String failedScript,
@@ -172,13 +195,17 @@ public class AIProductionController {
             return;
         }
 
+        // Safe fallback prompt if user ran in prompt-free script mode
+        String safePrompt = (userPrompt != null && !userPrompt.trim().isEmpty())
+                ? userPrompt
+                : "Execute and fix this custom Blender Python script to build a clean 3D scene without syntax or operator errors.";
+
         VynaraLogger.system("AIProductionController: Initiating AI Self-Correction (Attempt " + currentCorrectionAttempt + "/" + MAX_REPAIR_ATTEMPTS + ")...");
 
-        aiCorrector.correctBlenderScript(userPrompt, failedScript, errorTraceback, new GeminiApiClient.ApiCallback<String>() {
+        aiCorrector.correctBlenderScript(safePrompt, failedScript, errorTraceback, new GeminiApiClient.ApiCallback<String>() {
             @Override
             public void onSuccess(String repairedScript) {
                 currentCorrectionAttempt++;
-                // Exact mandatory in-app console log for Solution B
                 VynaraLogger.system("[SYSTEM] AI Self-Correction: Repaired script. Re-dispatching build...");
                 if (callback != null) {
                     callback.onSuccess(repairedScript);
@@ -220,12 +247,74 @@ public class AIProductionController {
         return aiCorrector.critiqueAndRefineBlenderScriptSync(userPrompt, currentScript, referenceImageFile, renderPreviewFile);
     }
 
+    /**
+     * Builds an immediate execution plan for an uploaded Python script, bypassing LLM prompt generation.
+     */
+    private ProductionPlan buildCustomScriptPlan(String scriptPath, String prompt, String engine) {
+        String scriptText = readScriptContent(scriptPath);
+        String assetId = "asset_script_" + System.currentTimeMillis();
+        String title = (prompt != null && !prompt.trim().isEmpty()) ? prompt : "Custom Script Build";
+
+        TaskGraph graph = new TaskGraph();
+
+        // Step 1: Clear canvas
+        ToolOperation clearOp = new ToolOperation("scene.clear");
+        TaskNode task1 = new TaskNode("task_1", "Clearing Canvas", "Resetting active scene", clearOp);
+        graph.addNode(task1);
+
+        // Step 2: Direct cloud generation using user script
+        ToolOperation generateOp = new ToolOperation("blender.cloud_generate")
+                .setParam("assetId", assetId)
+                .setParam("prompt", title)
+                .setParam("bpyScript", scriptText);
+        TaskNode task2 = new TaskNode("task_2", "blender.cloud_generate", "Executing custom Blender Python script", generateOp);
+        task2.addDependency("task_1");
+        graph.addNode(task2);
+
+        // Step 3: Mesh inspection
+        ToolOperation checkOp = new ToolOperation("validation.check_mesh");
+        TaskNode task3 = new TaskNode("task_3", "Inspecting Mesh & Scene Integrity", "Validating exported geometry", checkOp);
+        task3.addDependency("task_2");
+        graph.addNode(task3);
+
+        return new ProductionPlan(title, "Custom Script", engine, graph);
+    }
+
+    private String findCustomScriptPath(List<String> uris) {
+        if (uris == null) return null;
+        for (String u : uris) {
+            if (u != null && (u.toLowerCase().endsWith(".py") || u.contains("custom_user_script.py"))) {
+                return u;
+            }
+        }
+        return null;
+    }
+
+    private String readScriptContent(String filePath) {
+        try {
+            File f = new File(filePath);
+            if (f.exists() && f.length() > 0) {
+                byte[] bytes = new byte[(int) f.length()];
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    int read = fis.read(bytes);
+                    if (read > 0) {
+                        return new String(bytes, 0, read, StandardCharsets.UTF_8);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            VynaraLogger.e("AIProductionController: Error reading script file: " + e.getMessage());
+        }
+        return "";
+    }
+
     public File getFirstReferenceImageFile(List<String> resolvedUris) {
         if (resolvedUris != null && !resolvedUris.isEmpty()) {
-            String path = resolvedUris.get(0);
-            if (path != null && !path.trim().isEmpty()) {
-                File f = new File(path);
-                if (f.exists() && f.length() > 0) return f;
+            for (String path : resolvedUris) {
+                if (path != null && !path.trim().isEmpty() && !path.toLowerCase().endsWith(".py")) {
+                    File f = new File(path);
+                    if (f.exists() && f.length() > 0) return f;
+                }
             }
         }
         return null;
@@ -240,8 +329,7 @@ public class AIProductionController {
     }
 
     /**
-     * Resolves content:// URIs from the Android system photo picker into local cache files,
-     * ensuring Gemini Vision can read the actual image bytes.
+     * Resolves content:// URIs from the Android system photo picker into local cache files.
      */
     public List<String> resolveReferenceUris(List<String> uris) {
         List<String> resolved = new ArrayList<>();
