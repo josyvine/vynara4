@@ -5,6 +5,11 @@ import com.example.utils.VynaraLogger;
 
 public class BlenderWorkerAgent {
 
+    private static volatile String sLastMasterScript = null;
+    private static volatile String sLastUserPrompt = null;
+    private static volatile String sLastAssetId = null;
+    private static volatile AIDirectorSpec sLastDirectorSpec = null;
+
     public static class WorkerScripts {
         public final String heroScript;
         public final String environmentScript;
@@ -21,7 +26,8 @@ public class BlenderWorkerAgent {
 
     /**
      * Phase 3 Wrapper: Takes Gemini's dynamic Python script and wraps it with headless scene initialization,
-     * contextual environment, cinematic camera/lighting, CPU-safe Cycles settings, and standardized GLB export.
+     * contextual environment, cinematic camera/lighting, CPU-safe Cycles settings, standardized GLB export,
+     * and deterministic error logging into error.txt for Solution B.
      */
     public static WorkerScripts wrapDynamicScript(String dynamicScript, AIDirectorSpec spec, String assetId) {
         VynaraLogger.system("BlenderWorkerAgent: Wrapping dynamic AI script for asset [" + assetId + "]");
@@ -32,36 +38,12 @@ public class BlenderWorkerAgent {
         String w2 = buildWorker2EnvironmentScript(spec);
         String w3 = buildWorker3LightingAndRenderScript(spec);
 
-        StringBuilder master = new StringBuilder();
-        master.append("# ==========================================\n");
-        master.append("# Vynara Autonomous 3D Studio - Dynamic AI Master Build\n");
-        if (spec != null) {
-            master.append("# Source: ").append(spec.getGenerationSource()).append("\n");
-            master.append("# Scene: ").append(spec.getSceneType()).append(" | Mood: ").append(spec.getMood()).append("\n");
-        }
-        master.append("# ==========================================\n\n");
-        master.append("import bpy, os, math, random, sys\n");
-        master.append("import addon_utils\n\n");
-        master.append("try:\n");
-        master.append("    addon_utils.enable('archimesh')\n");
-        master.append("    addon_utils.enable('rigify')\n");
-        master.append("except Exception as e:\n");
-        master.append("    print(f'Addon activation note: {e}')\n\n");
-        master.append("os.makedirs('output', exist_ok=True)\n\n");
-        master.append("# Clean scene completely\n");
-        master.append("bpy.ops.object.select_all(action='SELECT')\n");
-        master.append("bpy.ops.object.delete(use_global=False)\n\n");
+        String master = buildMasterScript(w1, w2, w3, spec, "Dynamic AI Master Build");
 
-        master.append("# --- WORKER 1: DYNAMIC AI GENERATED GEOMETRY ---\n");
-        master.append(w1).append("\n\n");
+        // Retain script execution state for the self-healing AI pipeline
+        recordExecution(spec != null ? spec.getGenerationSource() : "Dynamic Scene", master, assetId, spec);
 
-        master.append("# --- WORKER 2: CONTEXTUAL ENVIRONMENT & FOLIAGE ---\n");
-        master.append(w2).append("\n\n");
-
-        master.append("# --- WORKER 3: ATMOSPHERE, LIGHTING & RENDER ---\n");
-        master.append(w3).append("\n");
-
-        return new WorkerScripts(w1, w2, w3, master.toString());
+        return new WorkerScripts(w1, w2, w3, master);
     }
 
     public static String wrapDynamicScript(String dynamicScript, AIDirectorSpec spec) {
@@ -69,9 +51,17 @@ public class BlenderWorkerAgent {
     }
 
     /**
+     * Solution B: Wraps Gemini's repaired script for Attempt 2 re-dispatch.
+     */
+    public static WorkerScripts wrapRepairedScript(String repairedScript, AIDirectorSpec spec, String assetId) {
+        VynaraLogger.system("BlenderWorkerAgent: Wrapping repaired script for Attempt 2 [" + assetId + "]");
+        return wrapDynamicScript(repairedScript, spec, assetId);
+    }
+
+    /**
      * Synthesizes specialized, modular Python scripts governed by the Director's Spec.
      * If passed dynamic Python code, wraps it cleanly. If passed an exact demo preset, builds the
-     * verified multi-part demo asset. Never falls back to a generic default box.
+     * verified multi-part demo asset.
      */
     public static WorkerScripts generateModularScripts(String userPrompt, AIDirectorSpec spec, String assetId) {
         VynaraLogger.system("BlenderWorkerAgent: Spawning modular worker scripts for asset [" + assetId + "]");
@@ -80,37 +70,86 @@ public class BlenderWorkerAgent {
         String w2 = buildWorker2EnvironmentScript(spec);
         String w3 = buildWorker3LightingAndRenderScript(spec);
 
+        String master = buildMasterScript(w1, w2, w3, spec, "Master Build");
+
+        // Retain script state for potential self-correction
+        recordExecution(userPrompt, master, assetId, spec);
+
+        return new WorkerScripts(w1, w2, w3, master);
+    }
+
+    private static String buildMasterScript(String w1, String w2, String w3, AIDirectorSpec spec, String title) {
         StringBuilder master = new StringBuilder();
         master.append("# ==========================================\n");
-        master.append("# Vynara Autonomous 3D Studio - Master Build\n");
+        master.append("# Vynara Autonomous 3D Studio - ").append(title).append("\n");
         if (spec != null) {
             master.append("# Source: ").append(spec.getGenerationSource()).append("\n");
             master.append("# Scene: ").append(spec.getSceneType()).append(" | Mood: ").append(spec.getMood()).append("\n");
         }
         master.append("# ==========================================\n\n");
-        master.append("import bpy, os, math, random, sys\n");
+        master.append("import bpy, os, math, random, sys, traceback\n");
         master.append("import addon_utils\n\n");
-        master.append("try:\n");
-        master.append("    addon_utils.enable('archimesh')\n");
-        master.append("    addon_utils.enable('rigify')\n");
-        master.append("except Exception as e:\n");
-        master.append("    print(f'Addon activation note: {e}')\n\n");
+
         master.append("os.makedirs('output', exist_ok=True)\n\n");
-        master.append("# Clean scene completely\n");
-        master.append("bpy.ops.object.select_all(action='SELECT')\n");
-        master.append("bpy.ops.object.delete(use_global=False)\n\n");
 
-        master.append("# --- WORKER 1: HERO STRUCTURE ---\n");
-        master.append(w1).append("\n\n");
+        // Top-level error interception writing to output/error.txt
+        master.append("try:\n");
+        master.append("    try:\n");
+        master.append("        addon_utils.enable('archimesh')\n");
+        master.append("        addon_utils.enable('rigify')\n");
+        master.append("    except Exception as ae:\n");
+        master.append("        print(f'Addon activation note: {ae}')\n\n");
 
-        master.append("# --- WORKER 2: CONTEXTUAL ENVIRONMENT & FOLIAGE ---\n");
-        master.append(w2).append("\n\n");
+        master.append("    # Clean scene completely\n");
+        master.append("    bpy.ops.object.select_all(action='SELECT')\n");
+        master.append("    bpy.ops.object.delete(use_global=False)\n\n");
 
-        master.append("# --- WORKER 3: ATMOSPHERE, LIGHTING & RENDER ---\n");
-        master.append(w3).append("\n");
+        master.append("    # --- WORKER 1: HERO GEOMETRY ---\n");
+        master.append(indentPythonCode(w1, 1)).append("\n\n");
 
-        return new WorkerScripts(w1, w2, w3, master.toString());
+        master.append("    # --- WORKER 2: CONTEXTUAL ENVIRONMENT & FOLIAGE ---\n");
+        master.append(indentPythonCode(w2, 1)).append("\n\n");
+
+        master.append("    # --- WORKER 3: ATMOSPHERE, LIGHTING & RENDER ---\n");
+        master.append(indentPythonCode(w3, 1)).append("\n\n");
+
+        // Exception handler: writes exact traceback and line numbers to error.txt
+        master.append("except Exception as execution_error:\n");
+        master.append("    err_msg = traceback.format_exc()\n");
+        master.append("    print('[BLENDER_FATAL_ERROR]\\n' + err_msg, file=sys.stderr)\n");
+        master.append("    with open('output/error.txt', 'w', encoding='utf-8') as ef:\n");
+        master.append("        ef.write(err_msg)\n");
+        master.append("    sys.exit(1)\n");
+
+        return master.toString();
     }
+
+    private static String indentPythonCode(String code, int indentLevels) {
+        if (code == null || code.isEmpty()) return "";
+        String indent = "    ".repeat(Math.max(0, indentLevels));
+        String[] lines = code.split("\\r?\\n");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i].trim().isEmpty()) {
+                sb.append("\n");
+            } else {
+                sb.append(indent).append(lines[i]).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    public static void recordExecution(String prompt, String masterScript, String assetId, AIDirectorSpec spec) {
+        sLastUserPrompt = prompt;
+        sLastMasterScript = masterScript;
+        sLastAssetId = assetId;
+        sLastDirectorSpec = spec;
+    }
+
+    public static String getLastMasterScript() { return sLastMasterScript; }
+    public static String getLastUserPrompt() { return sLastUserPrompt; }
+    public static String getLastAssetId() { return sLastAssetId; }
+    public static AIDirectorSpec getLastDirectorSpec() { return sLastDirectorSpec; }
 
     private static String buildWorker1HeroScript(String promptOrCode, AIDirectorSpec spec) {
         if (promptOrCode == null) return "";
@@ -134,7 +173,7 @@ public class BlenderWorkerAgent {
         sb.append("    bsdf_h.inputs['Roughness'].default_value = 0.35\n");
         sb.append("    bsdf_h.inputs['Metallic'].default_value = 0.2\n\n");
 
-        // 5 DEMO PRESETS: Full procedural geometry (no keyword traps or generic boxes)
+        // 5 DEMO PRESETS: Full procedural geometry
         if (p.contains("modern luxury leather sofa") || p.equals("leather sofa")) {
             sb.append("# --- DEMO PRESET: MODERN LUXURY LEATHER SOFA ---\n");
             sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.2))\n");
@@ -307,7 +346,7 @@ public class BlenderWorkerAgent {
             sb.append("    roof.name = f'Hut_Roof_{h_idx}'\n");
             sb.append("    roof.data.materials.append(mat_hero)\n");
         } else {
-            // General Fallback for non-preset calls: Clean minimal anchor (No default boxes)
+            // General Fallback for non-preset calls: Clean minimal anchor
             sb.append("# Contextual asset initialization (Geometry synthesized via Dynamic AI Script Writer)\n");
         }
 
@@ -329,7 +368,6 @@ public class BlenderWorkerAgent {
 
         String sceneType = (spec != null && spec.getSceneType() != null) ? spec.getSceneType().toLowerCase() : "general";
 
-        // Only generate ground terrain when the scene type warrants an outdoor/environment setting
         if (sceneType.contains("nature") || sceneType.contains("outdoor") || sceneType.contains("village") 
                 || sceneType.contains("villa") || sceneType.contains("landscape") || sceneType.contains("forest")) {
             sb.append("# Procedural Ground Terrain\n");
@@ -338,7 +376,6 @@ public class BlenderWorkerAgent {
             sb.append("terrain.name = 'Ground_Terrain'\n");
             sb.append("terrain.data.materials.append(mat_env)\n\n");
 
-            // Add organic vine curves ONLY for nature and jungle scenes (never for furniture or vehicles)
             if (sceneType.contains("nature") || sceneType.contains("jungle") || sceneType.contains("forest")) {
                 sb.append("# Natural Ground Flora & Vines\n");
                 sb.append("curve_data = bpy.data.curves.new('VineCurve', type='CURVE')\n");
@@ -426,7 +463,9 @@ public class BlenderWorkerAgent {
         sb.append("try:\n");
         sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)\n");
         sb.append("    print('3D GLTF Export Successful: output/model.glb')\n");
-        sb.append("except Exception as ge: print(f'GLTF export warning: {ge}')\n\n");
+        sb.append("except Exception as ge:\n");
+        sb.append("    print(f'GLTF export warning: {ge}')\n");
+        sb.append("    raise ge\n\n");
 
         // 2. Render Still Preview Image using Headless-Safe Cycles CPU Engine
         sb.append("# Step 2: Render Photorealistic Still Preview Image via CPU Cycles\n");
