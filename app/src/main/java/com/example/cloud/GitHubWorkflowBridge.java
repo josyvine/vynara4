@@ -42,6 +42,7 @@ public class GitHubWorkflowBridge {
     private static final long ARTIFACT_RETRY_DELAY_MS = 2500; // 2.5 seconds between artifact retries
 
     private static volatile String sLastBlenderError = null;
+    private static volatile String sLastBlenderTraceback = null;
 
     private final OkHttpClient httpClient;
     private final Handler mainHandler;
@@ -55,6 +56,11 @@ public class GitHubWorkflowBridge {
         void onProgress(int percentage, long bytesRead, long totalBytes);
         void onSuccess(File downloadedFile);
         void onError(String errorMessage);
+
+        // Solution B Hook: Invoked when Blender script execution failed and traceback was captured
+        default void onScriptExecutionFailed(String errorTraceback) {
+            onError("Blender Execution Error: " + errorTraceback);
+        }
     }
 
     public interface ConnectionTestCallback {
@@ -67,6 +73,11 @@ public class GitHubWorkflowBridge {
         void onProgress(int percentage, long bytesRead, long totalBytes);
         void onSuccess(File downloadedFile);
         void onError(String errorMessage);
+
+        // Solution B Hook: Intercepts runner/Blender failures to drive AI self-correction without aborting the task graph
+        default void onScriptExecutionFailed(long runId, String errorTraceback) {
+            onError("Blender Execution Error: " + errorTraceback);
+        }
     }
 
     public GitHubWorkflowBridge() {
@@ -76,6 +87,19 @@ public class GitHubWorkflowBridge {
                 .writeTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .build();
         this.mainHandler = new Handler(Looper.getMainLooper());
+    }
+
+    public static String getLastBlenderError() {
+        return sLastBlenderError;
+    }
+
+    public static String getLastBlenderTraceback() {
+        return sLastBlenderTraceback;
+    }
+
+    public static void clearLastBlenderError() {
+        sLastBlenderError = null;
+        sLastBlenderTraceback = null;
     }
 
     // --- Overloaded Context-Aware Methods (Auto-fetch Stored Token) ---
@@ -181,7 +205,7 @@ public class GitHubWorkflowBridge {
             JSONObject clientPayload = new JSONObject();
             clientPayload.put("asset_id", assetId);
 
-            // Shield Python code by encoding to Base64 to prevent any shell/bash quotation stripping
+            // Shield Python code by encoding to Base64 to prevent shell quotation stripping
             String safeScript = bpyScript != null ? bpyScript : "";
             try {
                 String b64Script = Base64.encodeToString(safeScript.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
@@ -285,7 +309,6 @@ public class GitHubWorkflowBridge {
                         }
                     }
 
-                    // Fallback to first artifact if specific name mapping fails
                     if (downloadLocationUrl == null && artifacts.length() > 0) {
                         downloadLocationUrl = artifacts.getJSONObject(0).optString("archive_download_url", null);
                     }
@@ -343,22 +366,25 @@ public class GitHubWorkflowBridge {
                     }
 
                     String downloadLocationUrl = null;
+                    // Match assetId, model, or error/log artifacts packaged by the runner
                     for (int i = 0; i < artifacts.length(); i++) {
                         JSONObject artifact = artifacts.getJSONObject(i);
-                        String name = artifact.optString("name", "");
-                        if (name.equalsIgnoreCase(assetId) || name.contains(assetId) || name.equalsIgnoreCase("model") || artifacts.length() == 1) {
+                        String name = artifact.optString("name", "").toLowerCase(Locale.US);
+                        if (name.equalsIgnoreCase(assetId) || name.contains(assetId.toLowerCase(Locale.US))
+                                || name.contains("model") || name.contains("error") || name.contains("log")
+                                || artifacts.length() == 1) {
                             downloadLocationUrl = artifact.optString("archive_download_url", null);
                             break;
                         }
                     }
 
-                    // Fallback to first available artifact if name pattern does not match
+                    // Fallback to first available artifact
                     if (downloadLocationUrl == null && artifacts.length() > 0) {
                         downloadLocationUrl = artifacts.getJSONObject(0).optString("archive_download_url", null);
                     }
 
                     if (downloadLocationUrl == null) {
-                        mainHandler.post(() -> callback.onError("Target GLB artifact not ready for Run #" + runId));
+                        mainHandler.post(() -> callback.onError("Artifact not found for Run #" + runId));
                         return;
                     }
 
@@ -381,7 +407,7 @@ public class GitHubWorkflowBridge {
         }
 
         final long dispatchTimeMs = System.currentTimeMillis();
-        sLastBlenderError = null; // Reset previous error state
+        clearLastBlenderError();
         VynaraLogger.system("GitHubWorkflowBridge: Starting workflow execution monitoring for assetId: " + assetId);
 
         final Runnable[] pollRunnable = new Runnable[1];
@@ -442,7 +468,7 @@ public class GitHubWorkflowBridge {
 
                                     String status = r.optString("status", "unknown");
 
-                                    // Guard: Ignore previously finished runs that were created before this dispatch
+                                    // Ignore finished runs that were created before this dispatch
                                     if ("completed".equalsIgnoreCase(status) && runCreatedAtMs < (dispatchTimeMs - 2000)) {
                                         continue;
                                     }
@@ -465,7 +491,7 @@ public class GitHubWorkflowBridge {
                                         VynaraLogger.system("GitHubWorkflowBridge: Workflow run #" + runId + " finished [" + conclusion + "]. Downloading artifacts...");
                                         mainHandler.post(() -> callback.onStatusUpdate("downloading", "Downloading worker artifacts..."));
 
-                                        pollAndDownloadArtifact(repository, personalAccessToken, runId, assetId, destinationFile, callback, 1, MAX_ARTIFACT_RETRY_ATTEMPTS);
+                                        pollAndDownloadArtifact(repository, personalAccessToken, runId, assetId, destinationFile, callback, 1, MAX_ARTIFACT_RETRY_ATTEMPTS, conclusion);
                                         return;
                                     }
                                 } else {
@@ -495,7 +521,8 @@ public class GitHubWorkflowBridge {
                                          File destinationFile,
                                          WorkflowPollingCallback callback,
                                          int attempt,
-                                         int maxAttempts) {
+                                         int maxAttempts,
+                                         String conclusion) {
         downloadWorkflowArtifactForRun(repository, personalAccessToken, runId, assetId, destinationFile, new ArtifactDownloadCallback() {
             @Override
             public void onProgress(int percentage, long bytesRead, long totalBytes) {
@@ -509,17 +536,127 @@ public class GitHubWorkflowBridge {
             }
 
             @Override
+            public void onScriptExecutionFailed(String errorTraceback) {
+                // Intercepted script error from error.txt / blender_execution.log
+                VynaraLogger.e("GitHubWorkflowBridge: Blender script failure captured from artifact: " + errorTraceback);
+                mainHandler.post(() -> callback.onScriptExecutionFailed(runId, errorTraceback));
+            }
+
+            @Override
             public void onError(String errorMessage) {
                 if (attempt < maxAttempts) {
                     VynaraLogger.system("GitHubWorkflowBridge: Waiting for run artifact indexing (attempt " + attempt + "/" + maxAttempts + ")...");
                     mainHandler.post(() -> callback.onStatusUpdate("indexing", "Waiting for artifact indexing (" + attempt + "/" + maxAttempts + ")..."));
-                    mainHandler.postDelayed(() -> pollAndDownloadArtifact(repository, personalAccessToken, runId, assetId, destinationFile, callback, attempt + 1, maxAttempts), ARTIFACT_RETRY_DELAY_MS);
+                    mainHandler.postDelayed(() -> pollAndDownloadArtifact(repository, personalAccessToken, runId, assetId, destinationFile, callback, attempt + 1, maxAttempts, conclusion), ARTIFACT_RETRY_DELAY_MS);
                 } else {
-                    String finalError = (sLastBlenderError != null && !sLastBlenderError.isEmpty())
-                            ? "Blender Worker Error: " + sLastBlenderError
-                            : "Artifact download failed: " + errorMessage;
-                    VynaraLogger.e("GitHubWorkflowBridge: " + finalError);
-                    callback.onError(finalError);
+                    // If no artifact was found and run failed, attempt fallback extraction from runner job log
+                    if ("failure".equalsIgnoreCase(conclusion)) {
+                        VynaraLogger.system("GitHubWorkflowBridge: No artifact zip found for failed run. Attempting raw runner log extraction...");
+                        fetchRunJobLogsFallback(repository, personalAccessToken, runId, callback);
+                    } else {
+                        String finalError = (sLastBlenderTraceback != null && !sLastBlenderTraceback.isEmpty())
+                                ? "Blender Worker Error: " + sLastBlenderTraceback
+                                : "Artifact download failed: " + errorMessage;
+                        VynaraLogger.e("GitHubWorkflowBridge: " + finalError);
+                        mainHandler.post(() -> callback.onError(finalError));
+                    }
+                }
+            }
+        });
+    }
+
+    private void fetchRunJobLogsFallback(String repository,
+                                         String personalAccessToken,
+                                         long runId,
+                                         WorkflowPollingCallback callback) {
+        String jobsUrl = "https://api.github.com/repos/" + repository.trim() + "/actions/runs/" + runId + "/jobs";
+
+        Request request = new Request.Builder()
+                .url(jobsUrl)
+                .header("Authorization", "Bearer " + personalAccessToken.trim())
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Vynara-3D-Studio-Android")
+                .get()
+                .build();
+
+        httpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                mainHandler.post(() -> callback.onError("Failed to query run jobs: " + e.getMessage()));
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                try (ResponseBody responseBody = response.body()) {
+                    if (!response.isSuccessful() || responseBody == null) {
+                        mainHandler.post(() -> callback.onError("Runner failed with HTTP " + response.code()));
+                        return;
+                    }
+
+                    JSONObject json = new JSONObject(responseBody.string());
+                    JSONArray jobs = json.optJSONArray("jobs");
+                    if (jobs == null || jobs.length() == 0) {
+                        mainHandler.post(() -> callback.onError("No job information found for Run #" + runId));
+                        return;
+                    }
+
+                    long failedJobId = -1;
+                    for (int i = 0; i < jobs.length(); i++) {
+                        JSONObject j = jobs.getJSONObject(i);
+                        if ("failure".equalsIgnoreCase(j.optString("conclusion", ""))) {
+                            failedJobId = j.optLong("id", -1);
+                            break;
+                        }
+                    }
+
+                    if (failedJobId == -1) {
+                        failedJobId = jobs.getJSONObject(0).optLong("id", -1);
+                    }
+
+                    downloadRawJobLog(repository, personalAccessToken, runId, failedJobId, callback);
+                } catch (Exception ex) {
+                    mainHandler.post(() -> callback.onError("Failed to parse jobs: " + ex.getMessage()));
+                }
+            }
+        });
+    }
+
+    private void downloadRawJobLog(String repository,
+                                   String personalAccessToken,
+                                   long runId,
+                                   long jobId,
+                                   WorkflowPollingCallback callback) {
+        String logsUrl = "https://api.github.com/repos/" + repository.trim() + "/actions/jobs/" + jobId + "/logs";
+
+        Request request = new Request.Builder()
+                .url(logsUrl)
+                .header("Authorization", "Bearer " + personalAccessToken.trim())
+                .header("User-Agent", "Vynara-3D-Studio-Android")
+                .get()
+                .build();
+
+        httpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                mainHandler.post(() -> callback.onError("Failed to retrieve runner logs: " + e.getMessage()));
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                try (ResponseBody responseBody = response.body()) {
+                    if (!response.isSuccessful() || responseBody == null) {
+                        mainHandler.post(() -> callback.onError("Failed to download runner logs: HTTP " + response.code()));
+                        return;
+                    }
+
+                    String logText = responseBody.string();
+                    String extractedTraceback = extractTraceback(logText);
+
+                    sLastBlenderTraceback = extractedTraceback;
+                    sLastBlenderError = extractErrorLine(extractedTraceback);
+
+                    VynaraLogger.e("GitHubWorkflowBridge: Extracted traceback from runner raw log:\n" + extractedTraceback);
+                    mainHandler.post(() -> callback.onScriptExecutionFailed(runId, extractedTraceback));
                 }
             }
         });
@@ -581,10 +718,17 @@ public class GitHubWorkflowBridge {
                     if (extracted && destinationFile.exists() && destinationFile.length() > 0) {
                         mainHandler.post(() -> callback.onSuccess(destinationFile));
                     } else {
-                        String errorMsg = (sLastBlenderError != null && !sLastBlenderError.isEmpty())
-                                ? "Blender Execution Failed: " + sLastBlenderError
-                                : "Extracted 3D model is missing or invalid. Check diagnostic console for internal worker logs.";
-                        mainHandler.post(() -> callback.onError(errorMsg));
+                        // Intercept failure: if Blender script failed, trigger Solution B self-correction hook
+                        String failureDetails = (sLastBlenderTraceback != null && !sLastBlenderTraceback.isEmpty())
+                                ? sLastBlenderTraceback
+                                : sLastBlenderError;
+
+                        if (failureDetails != null && !failureDetails.isEmpty()) {
+                            mainHandler.post(() -> callback.onScriptExecutionFailed(failureDetails));
+                        } else {
+                            String errorMsg = "Extracted 3D model is missing or invalid. Check diagnostic console for internal worker logs.";
+                            mainHandler.post(() -> callback.onError(errorMsg));
+                        }
                     }
 
                 } catch (Exception ex) {
@@ -598,7 +742,7 @@ public class GitHubWorkflowBridge {
     }
 
     /**
-     * Extracts the 3D model (.glb), preview image (.png), AND streams Blender's internal A-to-Z log.
+     * Extracts the 3D model (.glb), preview image (.png), and parses error.txt / blender_execution.log.
      */
     private boolean extractGlbFromZip(File zipFile, File destinationGlbFile) {
         boolean glbFound = false;
@@ -607,7 +751,7 @@ public class GitHubWorkflowBridge {
             byte[] buffer = new byte[8192];
 
             while ((entry = zis.getNextEntry()) != null) {
-                String fileName = entry.getName().toLowerCase();
+                String fileName = entry.getName().toLowerCase(Locale.US);
 
                 if (fileName.endsWith(".glb") || fileName.endsWith(".gltf")) {
                     if (destinationGlbFile.getParentFile() != null && !destinationGlbFile.getParentFile().exists()) {
@@ -623,7 +767,7 @@ public class GitHubWorkflowBridge {
                     }
                     glbFound = true;
                 } else if (fileName.endsWith(".png") || fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) {
-                    // Extract cinematic Cycles still render alongside GLB
+                    // Extract cinematic preview render
                     String renderName = destinationGlbFile.getName();
                     int dotIdx = renderName.lastIndexOf('.');
                     String baseName = (dotIdx > 0) ? renderName.substring(0, dotIdx) : renderName;
@@ -635,10 +779,9 @@ public class GitHubWorkflowBridge {
                             fos.write(buffer, 0, len);
                         }
                         fos.flush();
-                        VynaraLogger.system("GitHubWorkflowBridge: Extracted cinematic Cycles preview image: " + destinationImgFile.getName());
+                        VynaraLogger.system("GitHubWorkflowBridge: Extracted preview render: " + destinationImgFile.getName());
                     }
-                } else if (fileName.contains("blender_execution.log") || fileName.contains("error.txt") || fileName.endsWith(".log") || fileName.contains("traceback")) {
-                    // Stream Blender's internal execution output directly to VynaraLogger and capture failures
+                } else if (fileName.contains("error.txt") || fileName.contains("blender_execution.log") || fileName.endsWith(".log") || fileName.contains("traceback")) {
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     int len;
                     while ((len = zis.read(buffer)) > 0) {
@@ -646,16 +789,21 @@ public class GitHubWorkflowBridge {
                     }
                     String logContent = baos.toString(StandardCharsets.UTF_8.name());
 
+                    // Prioritize explicit error.txt
+                    if (fileName.contains("error.txt") || sLastBlenderTraceback == null) {
+                        sLastBlenderTraceback = extractTraceback(logContent);
+                        sLastBlenderError = extractErrorLine(sLastBlenderTraceback);
+                    }
+
                     VynaraLogger.system("========== BLENDER WORKER INTERNAL LOG START ==========");
                     String[] lines = logContent.split("\\r?\\n");
                     for (String line : lines) {
                         if (line.trim().isEmpty()) continue;
-                        String lowerLine = line.toLowerCase();
-                        if (lowerLine.contains("error") || lowerLine.contains("exception") 
-                                || lowerLine.contains("traceback") || lowerLine.contains("failed") 
+                        String lowerLine = line.toLowerCase(Locale.US);
+                        if (lowerLine.contains("error") || lowerLine.contains("exception")
+                                || lowerLine.contains("traceback") || lowerLine.contains("failed")
                                 || lowerLine.contains("syntaxerror")) {
                             VynaraLogger.e("[BLENDER_WORKER] " + line.trim());
-                            sLastBlenderError = line.trim();
                         } else {
                             VynaraLogger.cloud("[BLENDER_WORKER] " + line.trim());
                         }
@@ -670,9 +818,47 @@ public class GitHubWorkflowBridge {
         return glbFound;
     }
 
-    /**
-     * Helper to retrieve the rendered Cycles preview image if it was extracted alongside the GLB.
-     */
+    private static String extractTraceback(String logText) {
+        if (logText == null || logText.trim().isEmpty()) {
+            return "Blender execution failed with unknown error.";
+        }
+        String[] lines = logText.split("\\r?\\n");
+        StringBuilder tb = new StringBuilder();
+        boolean capturing = false;
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("Traceback (most recent call last):")) {
+                capturing = true;
+                tb.setLength(0);
+            }
+            if (capturing) {
+                tb.append(trimmed).append("\n");
+                // Stop capturing after the error line is recorded
+                if (trimmed.matches("^[A-Za-z0-9_]+Error:.*") || trimmed.matches("^[A-Za-z0-9_]+Exception:.*")) {
+                    capturing = false;
+                }
+            }
+        }
+
+        if (tb.length() > 0) {
+            return tb.toString().trim();
+        }
+        return logText.trim();
+    }
+
+    private static String extractErrorLine(String traceback) {
+        if (traceback == null || traceback.trim().isEmpty()) return "Unknown Error";
+        String[] lines = traceback.split("\\r?\\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String l = lines[i].trim();
+            if (l.contains("Error:") || l.contains("Exception:")) {
+                return l;
+            }
+        }
+        return lines[lines.length - 1].trim();
+    }
+
     public static File getAssociatedRenderImage(File glbFile) {
         if (glbFile == null || glbFile.getParentFile() == null) return null;
         String name = glbFile.getName();
