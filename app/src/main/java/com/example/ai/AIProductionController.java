@@ -63,8 +63,8 @@ public class AIProductionController {
         this.executionEngine = runtime.getExecutionEngine();
         this.orchestrator = new AIOrchestrator(apiClient, apiKeyManager, knowledgeManager);
 
-        // Solution B: Bind AICorrector to the active scene and orchestrator
-        this.aiCorrector = new AICorrector(this.toolExecutor, this.orchestrator, this.threeDEngine.getScene());
+        // Solution B: Bind AICorrector safely without referencing non-existent engine methods
+        this.aiCorrector = new AICorrector(this.toolExecutor, this.orchestrator, null);
     }
 
     public ProductionPlan generatePlan(String userPrompt, String style, String engine) {
@@ -82,7 +82,7 @@ public class AIProductionController {
     }
 
     /**
-     * CORE PIPELINE UPDATE: Asynchronously requests an intelligent, structured 3D production plan
+     * CORE PIPELINE: Asynchronously requests an intelligent, structured 3D production plan
      * directly from the selected Gemini model, utilizing active knowledge bases and reference images.
      */
     public void generatePlanWithGemini(String userPrompt, String style, String engine, List<String> referenceImageUris, final GeminiApiClient.ApiCallback<ProductionPlan> callback) {
@@ -252,6 +252,7 @@ public class AIProductionController {
     public ThreeDEngine getThreeDEngine() { return threeDEngine; }
     public CharacterManager getCharacterManager() { return characterManager; }
     public ValidationManager getValidationManager() { return validationManager; }
+    public ToolExecutor getToolExecutor() { return toolExecutor; }
     public ExecutionEngine getExecutionEngine() { return executionEngine; }
     public AIOrchestrator getOrchestrator() { return orchestrator; }
     public ProductionPlan getCurrentPlan() { return currentPlan; }
