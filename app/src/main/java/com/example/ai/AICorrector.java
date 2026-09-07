@@ -64,8 +64,8 @@ public class AICorrector {
 
     /**
      * SOLUTION B: AI Script Corrector (Async)
-     * Analyzes the original user prompt, the faulty Blender script, and the exact terminal traceback
-     * from error.txt, asking Gemini to return an executable, zero-error replacement.
+     * Analyzes the faulty Blender script and the terminal traceback from error.txt,
+     * working seamlessly whether a prompt was supplied or omitted.
      */
     public void correctBlenderScript(String userPrompt,
                                      String failedScript,
@@ -118,8 +118,6 @@ public class AICorrector {
 
     /**
      * SOLUTION B: AI Script Corrector (Sync / Blocking)
-     * Convenience method for background execution threads that need to synchronously wait
-     * for the repaired script.
      */
     public String correctBlenderScriptSync(String userPrompt, String failedScript, String errorTraceback) {
         final CountDownLatch latch = new CountDownLatch(1);
@@ -155,7 +153,7 @@ public class AICorrector {
     /**
      * VISUAL CRITIQUE & REFINEMENT (Async)
      * Compares the Cycles preview render against the reference photo using Gemini Vision to spot and fix
-     * aesthetic defects (boxiness, wheel alignment, bad lighting).
+     * aesthetic defects (boxiness, wheel alignment, bad lighting). Supports prompt-free scripts.
      */
     public void critiqueAndRefineBlenderScript(String userPrompt,
                                               String currentScript,
@@ -167,6 +165,10 @@ public class AICorrector {
             return;
         }
 
+        String safePrompt = (userPrompt != null && !userPrompt.trim().isEmpty())
+                ? userPrompt
+                : "Custom user-supplied Blender Python script (Prompt omitted). Refine geometry curvature, beveling, materials, and lighting based on the visual render preview.";
+
         String b64Ref = encodeImageFileToBase64(referenceImageFile);
         String b64Render = encodeImageFileToBase64(renderPreviewFile);
 
@@ -175,7 +177,7 @@ public class AICorrector {
         aiOrchestrator.getApiClient().critiqueAndRefineRender(
                 aiOrchestrator.getApiKeyManager().getApiKey(),
                 aiOrchestrator.getApiKeyManager().getSelectedModel(),
-                userPrompt,
+                safePrompt,
                 currentScript,
                 b64Ref,
                 b64Render,
@@ -239,24 +241,29 @@ public class AICorrector {
 
     private String buildBlenderRepairSystemInstruction() {
         return "You are an elite Blender Python (`bpy`) core engineer and debugger specializing in automated 3D asset generation.\n" +
-                "A cloud worker running headless Blender failed with a runtime exception/traceback while executing a generated script.\n" +
-                "Your objective is to fix the exact error identified in the traceback, preserve all 3D assets/materials from the prompt, and output the entire corrected script.\n\n" +
+                "A cloud worker running headless Blender 4.2+ failed with a runtime exception or traceback while executing a script.\n" +
+                "Your objective is to fix the exact error identified in the traceback, preserve all 3D assets/materials from the code, and output the entire corrected script.\n\n" +
                 "CRITICAL REQUIREMENTS:\n" +
                 "1. Output ONLY the fully corrected, executable Python script inside a single ```python ... ``` block. No conversational filler, greetings, or explanations.\n" +
                 "2. Read the error traceback carefully and fix the specific failing line, parameter, enum, or syntax.\n" +
-                "3. API GUARDS:\n" +
+                "3. If the user prompt was omitted, rely on the script's code, structure, comments, and variable names to understand the 3D scene.\n" +
+                "4. API GUARDS:\n" +
                 "   - Mesh primitives must use `bpy.ops.mesh.primitive_..._add` (never create or raw call without add).\n" +
-                "   - Lights must use `bpy.ops.object.light_add(type=...)` (never `bpy.ops.light.add`).\n" +
-                "   - Texture types in `bpy.data.textures.new(...)` MUST be one of: ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'). Never invent custom enum names.\n" +
-                "   - Modifiers must use valid Blender types: 'SUBSURF', 'BEVEL', 'BOOLEAN', 'SOLIDIFY', 'ARRAY', 'MIRROR', etc.\n" +
-                "   - Ensure `bpy.ops.export_scene.gltf` or `bpy.ops.wm.save_as_mainfile` runs at the very end as designed.\n" +
-                "4. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
+                "   - Lights must use `bpy.ops.object.light_add(type=...)`. Valid types are strictly: ('POINT', 'SUN', 'SPOT', 'AREA'). Never use texture enums like 'CLOUDS' for lights!\n" +
+                "   - Texture types in `bpy.data.textures.new(...)` MUST be one of: ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD').\n" +
+                "   - Principled BSDF socket names must conform to Blender 4.2+ ('Transmission Weight', 'Roughness', 'Metallic', 'Specular IOR Level').\n" +
+                "   - Ensure `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)` runs at the very end.\n" +
+                "5. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
     }
 
     private String buildBlenderRepairUserPrompt(String userPrompt, String failedScript, String errorTraceback) {
+        String safePrompt = (userPrompt != null && !userPrompt.trim().isEmpty())
+                ? userPrompt
+                : "Custom user-supplied Blender Python script (Prompt omitted by user). Fix syntax and API errors while preserving all 3D mesh objects and scene composition.";
+
         StringBuilder sb = new StringBuilder();
-        sb.append("=== WHAT WAS BEING BUILT (USER PROMPT) ===\n")
-          .append(userPrompt != null ? userPrompt : "Generate 3D Scene")
+        sb.append("=== WHAT WAS BEING BUILT (USER PROMPT / GOAL) ===\n")
+          .append(safePrompt)
           .append("\n\n")
           .append("=== EXACT BLENDER TERMINAL ERROR / TRACEBACK (FROM error.txt) ===\n")
           .append(errorTraceback != null ? errorTraceback : "Unknown execution failure")
