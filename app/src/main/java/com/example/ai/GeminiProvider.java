@@ -57,4 +57,21 @@ public class GeminiProvider implements AIProvider {
     public void generateStructuredJson(String apiKey, String modelId, String systemInstruction, String userPrompt, GeminiApiClient.ApiCallback<String> callback) {
         apiClient.generateStructuredJson(apiKey, modelId, systemInstruction, userPrompt, callback);
     }
+
+    /**
+     * SOLUTION B: Self-Correction Provider Dispatch
+     * Routes the repair request with prompt, faulty script, and error.txt traceback to the Gemini API client.
+     */
+    public void repairBlenderScript(String apiKey,
+                                    String modelId,
+                                    String userPrompt,
+                                    String failedScript,
+                                    String errorTraceback,
+                                    GeminiApiClient.ApiCallback<String> callback) {
+        apiClient.repairBlenderScript(apiKey, modelId, userPrompt, failedScript, errorTraceback, callback);
+    }
+
+    public GeminiApiClient getApiClient() {
+        return apiClient;
+    }
 }
