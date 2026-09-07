@@ -27,7 +27,7 @@ jobs:
           sudo mkdir -p /opt/blender
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
-      # Step 3: Execute Blender Python Script with Multi-Agent Auto-Harness
+      # Step 3: Execute Blender Python Script with Auto-Repair & Fast Cycles Snapshot
       - name: Execute Blender Python Script
         env:
           BPY_SCRIPT: ${{ github.event.client_payload.bpy_script }}
@@ -55,7 +55,7 @@ jobs:
                       event_data = json.load(ef)
                       payload = event_data.get('client_payload', {})
                       
-                      # Decode Base64 payload first (immune to bash/shell quote stripping)
+                      # Support uploaded custom scripts and dynamic payloads via Base64
                       if 'bpy_script_b64' in payload and payload['bpy_script_b64'].strip():
                           bpy_script = base64.b64decode(payload['bpy_script_b64']).decode('utf-8', errors='ignore')
                       elif 'bpy_script' in payload:
@@ -88,15 +88,11 @@ jobs:
           if not w3: w3 = os.environ.get('W3_MATERIALS', '')
           if not w4: w4 = os.environ.get('W4_CINEMATICS', '')
 
-          # Assemble dynamic multi-agent modular scripts if provided separately
+          # Assemble dynamic modular scripts if provided separately
           if not bpy_script.strip() and (w1.strip() or w2.strip() or w3.strip() or w4.strip()):
               bpy_script = (
-                  "import bpy, os, math, random, sys, traceback\n"
-                  "import addon_utils\n\n"
+                  "import bpy, os, math, random, sys, traceback\n\n"
                   "os.makedirs('output', exist_ok=True)\n"
-                  "for addon in ['archimesh', 'rigify']:\n"
-                  "    try: addon_utils.enable(addon)\n"
-                  "    except Exception: pass\n\n"
                   "bpy.ops.object.select_all(action='SELECT')\n"
                   "bpy.ops.object.delete(use_global=False)\n\n"
                   f"# --- W1: STRUCTURE ---\n{w1}\n\n"
@@ -105,7 +101,6 @@ jobs:
                   f"# --- W4: LIGHTING & CAM ---\n{w4}\n"
               )
 
-          # Fail fast if payload is completely empty
           if not bpy_script.strip():
               err_msg = "FATAL ERROR: No Blender Python script provided in payload."
               print(err_msg)
@@ -115,13 +110,16 @@ jobs:
 
           # --- AST & REGEX AUTO-REPAIR PIPELINE ---
 
-          # Auto-Repair 1: Fix unquoted node lookups
+          # Auto-Repair 1: Neutralize unstable headless addon registrations (e.g. rigify, archimesh in 4.2)
+          bpy_script = re.sub(r"addon_utils\.enable\(['\"](?:rigify|archimesh)['\"]\)", "pass", bpy_script)
+
+          # Auto-Repair 2: Fix unquoted node lookups
           bpy_script = re.sub(r'nodes\.get\(\s*([A-Za-z0-9_ ]+)\s*\)', lambda m: f'nodes.get("{m.group(1).strip()}")' if '"' not in m.group(1) and "'" not in m.group(1) else m.group(0), bpy_script)
 
-          # Auto-Repair 2: Fix unquoted f-strings
+          # Auto-Repair 3: Fix unquoted f-strings
           bpy_script = re.sub(r'(?<=[=\s,(])f([a-zA-Z0-9_]+\{[^}"\n]+\}[a-zA-Z0-9_]*)', r'f"\1"', bpy_script)
 
-          # Auto-Repair 3: Fix hallucinated operator names
+          # Auto-Repair 4: Fix hallucinated operator names
           bpy_script = bpy_script.replace(".primitive_cube_create(", ".primitive_cube_add(")
           bpy_script = bpy_script.replace(".primitive_plane_create(", ".primitive_plane_add(")
           bpy_script = bpy_script.replace(".primitive_cylinder_create(", ".primitive_cylinder_add(")
@@ -131,16 +129,17 @@ jobs:
           bpy_script = bpy_script.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(")
           bpy_script = bpy_script.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.")
 
-          # Auto-Repair 4: Blender 4.2+ Principled BSDF socket updates
+          # Auto-Repair 5: Blender 4.2+ Principled BSDF socket updates
           bpy_script = bpy_script.replace("['Transmission'].default_value", "['Transmission Weight'].default_value")
           bpy_script = bpy_script.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value")
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
 
-          # Auto-Repair 5: Fix hallucinated texture type enums
+          # Auto-Repair 6: SCOPED Texture Type Fix (Never corrupt light or curve types!)
           valid_tex = ("'NONE'", "'BLEND'", "'CLOUDS'", "'DISTORTED_NOISE'", "'IMAGE'", "'MAGIC'", "'MARBLE'", "'MUSGRAVE'", "'NOISE'", "'STUCCI'", "'VORONOI'", "'WOOD'")
-          bpy_script = re.sub(r"type=['\"]([A-Za-z0-9_]+)['\"]", lambda m: m.group(0) if f"'{m.group(1)}'" in valid_tex else "type='CLOUDS'", bpy_script)
+          bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", 
+                              lambda m: f"{m.group(1)}{m.group(2) if f\"'{m.group(2)}'\" in valid_tex else 'CLOUDS'}{m.group(3)}", bpy_script)
 
-          # Auto-Repair 6: Ensure standard GLTF/GLB export exists
+          # Auto-Repair 7: Ensure standard GLTF/GLB export exists
           if 'export_scene.gltf' not in bpy_script:
               bpy_script += (
                   "\n\n# Standard Model Exporter\n"
@@ -152,10 +151,10 @@ jobs:
                   "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
               )
 
-          # Auto-Repair 7: Ensure automated Cycles preview render exists for visual feedback
+          # Auto-Repair 8: High-speed progressive Cycles snapshot (16 samples, ~30 seconds)
           if 'output/render.png' not in bpy_script:
               bpy_script += (
-                  "\n\n# Autonomous Cycles Viewport Snapshot for Visual Inspection\n"
+                  "\n\n# High-Speed Viewport Snapshot for Visual Inspection\n"
                   "try:\n"
                   "    if not os.path.exists('output/render.png'):\n"
                   "        if not bpy.context.scene.camera:\n"
@@ -168,7 +167,7 @@ jobs:
                   "        bpy.context.scene.render.resolution_y = 768\n"
                   "        bpy.context.scene.render.filepath = 'output/render.png'\n"
                   "        bpy.ops.render.render(write_still=True)\n"
-                  "        print('Autonomous Cycles snapshot complete: output/render.png')\n"
+                  "        print('Cycles snapshot complete: output/render.png')\n"
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
               )
 
@@ -183,7 +182,7 @@ jobs:
 
           EOF
 
-          # Run headless Blender and tee output
+          # Run headless Blender and capture output
           /opt/blender/blender -b -P run_task.py 2>&1 | tee output/blender_execution.log || true
 
           # Extract clean Python traceback for Solution B if any exception occurred
