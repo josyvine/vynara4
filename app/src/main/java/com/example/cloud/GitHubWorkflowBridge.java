@@ -131,6 +131,17 @@ public class GitHubWorkflowBridge {
         dispatchGenerationWorkflow(repository, token, eventType, assetId, bpyScript, callback);
     }
 
+    /**
+     * Directly dispatches custom uploaded .py scripts with prompt-free execution.
+     */
+    public void dispatchCustomScriptWorkflow(Context context,
+                                             String repository,
+                                             String assetId,
+                                             String customScript,
+                                             WorkflowDispatchCallback callback) {
+        dispatchGenerationWorkflow(context, repository, "vynara_generate", assetId, customScript, callback);
+    }
+
     public void dispatchModularGenerationWorkflow(Context context,
                                                   String repository,
                                                   String eventType,
@@ -285,9 +296,6 @@ public class GitHubWorkflowBridge {
         }
     }
 
-    /**
-     * Dispatches specialized 4-Worker dynamic sub-scripts to the GitHub Actions runner.
-     */
     public void dispatchModularGenerationWorkflow(String repository,
                                                   String personalAccessToken,
                                                   String eventType,
@@ -872,6 +880,10 @@ public class GitHubWorkflowBridge {
                     int dotIdx = renderName.lastIndexOf('.');
                     String baseName = (dotIdx > 0) ? renderName.substring(0, dotIdx) : renderName;
                     File destinationImgFile = new File(destinationGlbFile.getParentFile(), baseName + ".png");
+
+                    if (destinationImgFile.getParentFile() != null && !destinationImgFile.getParentFile().exists()) {
+                        destinationImgFile.getParentFile().mkdirs();
+                    }
 
                     try (FileOutputStream fos = new FileOutputStream(destinationImgFile)) {
                         int len;
