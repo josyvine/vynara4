@@ -135,9 +135,15 @@ jobs:
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
 
           # Auto-Repair 6: SCOPED Texture Type Fix (Never corrupt light or curve types!)
-          valid_tex = ("'NONE'", "'BLEND'", "'CLOUDS'", "'DISTORTED_NOISE'", "'IMAGE'", "'MAGIC'", "'MARBLE'", "'MUSGRAVE'", "'NOISE'", "'STUCCI'", "'VORONOI'", "'WOOD'")
-          bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", 
-                              lambda m: f"{m.group(1)}{m.group(2) if f\"'{m.group(2)}'\" in valid_tex else 'CLOUDS'}{m.group(3)}", bpy_script)
+          valid_tex = {'NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'}
+          def fix_texture_type(m):
+              prefix = m.group(1)
+              tex_val = m.group(2)
+              suffix = m.group(3)
+              if tex_val not in valid_tex:
+                  tex_val = 'CLOUDS'
+              return prefix + tex_val + suffix
+          bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", fix_texture_type, bpy_script)
 
           # Auto-Repair 7: Ensure standard GLTF/GLB export exists
           if 'export_scene.gltf' not in bpy_script:
