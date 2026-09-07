@@ -43,6 +43,7 @@ public class GitHubWorkflowBridge {
 
     private static volatile String sLastBlenderError = null;
     private static volatile String sLastBlenderTraceback = null;
+    private static volatile File sLastRenderImage = null;
 
     private final OkHttpClient httpClient;
     private final Handler mainHandler;
@@ -61,6 +62,9 @@ public class GitHubWorkflowBridge {
         default void onScriptExecutionFailed(String errorTraceback) {
             onError("Blender Execution Error: " + errorTraceback);
         }
+
+        // Multimodal Visual Feedback Hook: Invoked when Cycles preview render is extracted
+        default void onRenderPreviewReady(File renderPreviewFile) {}
     }
 
     public interface ConnectionTestCallback {
@@ -78,6 +82,9 @@ public class GitHubWorkflowBridge {
         default void onScriptExecutionFailed(long runId, String errorTraceback) {
             onError("Blender Execution Error: " + errorTraceback);
         }
+
+        // Multimodal Visual Feedback Hook: Invoked when Cycles preview render is extracted
+        default void onRenderPreviewReady(File renderPreviewFile) {}
     }
 
     public GitHubWorkflowBridge() {
@@ -97,9 +104,14 @@ public class GitHubWorkflowBridge {
         return sLastBlenderTraceback;
     }
 
+    public static File getLatestRenderImage() {
+        return sLastRenderImage;
+    }
+
     public static void clearLastBlenderError() {
         sLastBlenderError = null;
         sLastBlenderTraceback = null;
+        sLastRenderImage = null;
     }
 
     // --- Overloaded Context-Aware Methods (Auto-fetch Stored Token) ---
@@ -117,6 +129,19 @@ public class GitHubWorkflowBridge {
                                            WorkflowDispatchCallback callback) {
         String token = GitHubOAuthService.getAccessToken(context);
         dispatchGenerationWorkflow(repository, token, eventType, assetId, bpyScript, callback);
+    }
+
+    public void dispatchModularGenerationWorkflow(Context context,
+                                                  String repository,
+                                                  String eventType,
+                                                  String assetId,
+                                                  String w1Structure,
+                                                  String w2Details,
+                                                  String w3Materials,
+                                                  String w4Cinematics,
+                                                  WorkflowDispatchCallback callback) {
+        String token = GitHubOAuthService.getAccessToken(context);
+        dispatchModularGenerationWorkflow(repository, token, eventType, assetId, w1Structure, w2Details, w3Materials, w4Cinematics, callback);
     }
 
     public void downloadWorkflowArtifact(Context context,
@@ -205,7 +230,6 @@ public class GitHubWorkflowBridge {
             JSONObject clientPayload = new JSONObject();
             clientPayload.put("asset_id", assetId);
 
-            // Shield Python code by encoding to Base64 to prevent shell quotation stripping
             String safeScript = bpyScript != null ? bpyScript : "";
             try {
                 String b64Script = Base64.encodeToString(safeScript.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
@@ -258,6 +282,78 @@ public class GitHubWorkflowBridge {
             });
         } catch (Exception ex) {
             callback.onError("Failed to assemble dispatch payload: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Dispatches specialized 4-Worker dynamic sub-scripts to the GitHub Actions runner.
+     */
+    public void dispatchModularGenerationWorkflow(String repository,
+                                                  String personalAccessToken,
+                                                  String eventType,
+                                                  String assetId,
+                                                  String w1Structure,
+                                                  String w2Details,
+                                                  String w3Materials,
+                                                  String w4Cinematics,
+                                                  WorkflowDispatchCallback callback) {
+        if (repository == null || repository.trim().isEmpty() || personalAccessToken == null || personalAccessToken.trim().isEmpty()) {
+            callback.onError("GitHub credentials are not properly configured.");
+            return;
+        }
+
+        String dispatchUrl = "https://api.github.com/repos/" + repository.trim() + "/dispatches";
+
+        try {
+            JSONObject clientPayload = new JSONObject();
+            clientPayload.put("asset_id", assetId);
+            clientPayload.put("w1StructureScript", w1Structure != null ? w1Structure : "");
+            clientPayload.put("w2DetailsScript", w2Details != null ? w2Details : "");
+            clientPayload.put("w3MaterialsScript", w3Materials != null ? w3Materials : "");
+            clientPayload.put("w4CinematicsScript", w4Cinematics != null ? w4Cinematics : "");
+            clientPayload.put("timestamp", System.currentTimeMillis());
+
+            JSONObject rootPayload = new JSONObject();
+            rootPayload.put("event_type", (eventType != null && !eventType.trim().isEmpty()) ? eventType : "vynara_generate");
+            rootPayload.put("client_payload", clientPayload);
+
+            RequestBody body = RequestBody.create(rootPayload.toString(), JSON_MEDIA_TYPE);
+
+            Request request = new Request.Builder()
+                    .url(dispatchUrl)
+                    .header("Authorization", "Bearer " + personalAccessToken.trim())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Vynara-3D-Studio-Android")
+                    .post(body)
+                    .build();
+
+            VynaraLogger.system("GitHubWorkflowBridge: Dispatching 4-Worker modular build to: " + dispatchUrl + " [Asset: " + assetId + "]");
+
+            httpClient.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    VynaraLogger.e("Modular dispatch failed: " + e.getMessage(), e);
+                    mainHandler.post(() -> callback.onError("Failed to dispatch workflow: " + e.getMessage()));
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) {
+                    try {
+                        if (response.code() == 204 || response.isSuccessful()) {
+                            VynaraLogger.system("GitHubWorkflowBridge: 4-Worker workflow dispatched successfully (HTTP " + response.code() + ")");
+                            mainHandler.post(() -> callback.onDispatched(eventType, assetId));
+                        } else {
+                            String err = "GitHub returned HTTP " + response.code() + " (" + response.message() + ")";
+                            VynaraLogger.e(err);
+                            mainHandler.post(() -> callback.onError(err));
+                        }
+                    } finally {
+                        response.close();
+                    }
+                }
+            });
+        } catch (Exception ex) {
+            callback.onError("Failed to assemble modular dispatch payload: " + ex.getMessage());
         }
     }
 
@@ -366,7 +462,6 @@ public class GitHubWorkflowBridge {
                     }
 
                     String downloadLocationUrl = null;
-                    // Match assetId, model, or error/log artifacts packaged by the runner
                     for (int i = 0; i < artifacts.length(); i++) {
                         JSONObject artifact = artifacts.getJSONObject(i);
                         String name = artifact.optString("name", "").toLowerCase(Locale.US);
@@ -378,7 +473,6 @@ public class GitHubWorkflowBridge {
                         }
                     }
 
-                    // Fallback to first available artifact
                     if (downloadLocationUrl == null && artifacts.length() > 0) {
                         downloadLocationUrl = artifacts.getJSONObject(0).optString("archive_download_url", null);
                     }
@@ -468,7 +562,6 @@ public class GitHubWorkflowBridge {
 
                                     String status = r.optString("status", "unknown");
 
-                                    // Ignore finished runs that were created before this dispatch
                                     if ("completed".equalsIgnoreCase(status) && runCreatedAtMs < (dispatchTimeMs - 2000)) {
                                         continue;
                                     }
@@ -532,12 +625,19 @@ public class GitHubWorkflowBridge {
             @Override
             public void onSuccess(File downloadedFile) {
                 VynaraLogger.system("GitHubWorkflowBridge: Artifact extracted successfully: " + downloadedFile.getAbsolutePath());
+                if (sLastRenderImage != null) {
+                    callback.onRenderPreviewReady(sLastRenderImage);
+                }
                 callback.onSuccess(downloadedFile);
             }
 
             @Override
+            public void onRenderPreviewReady(File renderPreviewFile) {
+                callback.onRenderPreviewReady(renderPreviewFile);
+            }
+
+            @Override
             public void onScriptExecutionFailed(String errorTraceback) {
-                // Intercepted script error from error.txt / blender_execution.log
                 VynaraLogger.e("GitHubWorkflowBridge: Blender script failure captured from artifact: " + errorTraceback);
                 mainHandler.post(() -> callback.onScriptExecutionFailed(runId, errorTraceback));
             }
@@ -549,7 +649,6 @@ public class GitHubWorkflowBridge {
                     mainHandler.post(() -> callback.onStatusUpdate("indexing", "Waiting for artifact indexing (" + attempt + "/" + maxAttempts + ")..."));
                     mainHandler.postDelayed(() -> pollAndDownloadArtifact(repository, personalAccessToken, runId, assetId, destinationFile, callback, attempt + 1, maxAttempts, conclusion), ARTIFACT_RETRY_DELAY_MS);
                 } else {
-                    // If no artifact was found and run failed, attempt fallback extraction from runner job log
                     if ("failure".equalsIgnoreCase(conclusion)) {
                         VynaraLogger.system("GitHubWorkflowBridge: No artifact zip found for failed run. Attempting raw runner log extraction...");
                         fetchRunJobLogsFallback(repository, personalAccessToken, runId, callback);
@@ -716,9 +815,11 @@ public class GitHubWorkflowBridge {
                     }
 
                     if (extracted && destinationFile.exists() && destinationFile.length() > 0) {
+                        if (sLastRenderImage != null) {
+                            callback.onRenderPreviewReady(sLastRenderImage);
+                        }
                         mainHandler.post(() -> callback.onSuccess(destinationFile));
                     } else {
-                        // Intercept failure: if Blender script failed, trigger Solution B self-correction hook
                         String failureDetails = (sLastBlenderTraceback != null && !sLastBlenderTraceback.isEmpty())
                                 ? sLastBlenderTraceback
                                 : sLastBlenderError;
@@ -767,7 +868,6 @@ public class GitHubWorkflowBridge {
                     }
                     glbFound = true;
                 } else if (fileName.endsWith(".png") || fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) {
-                    // Extract cinematic preview render
                     String renderName = destinationGlbFile.getName();
                     int dotIdx = renderName.lastIndexOf('.');
                     String baseName = (dotIdx > 0) ? renderName.substring(0, dotIdx) : renderName;
@@ -779,6 +879,7 @@ public class GitHubWorkflowBridge {
                             fos.write(buffer, 0, len);
                         }
                         fos.flush();
+                        sLastRenderImage = destinationImgFile;
                         VynaraLogger.system("GitHubWorkflowBridge: Extracted preview render: " + destinationImgFile.getName());
                     }
                 } else if (fileName.contains("error.txt") || fileName.contains("blender_execution.log") || fileName.endsWith(".log") || fileName.contains("traceback")) {
@@ -789,7 +890,6 @@ public class GitHubWorkflowBridge {
                     }
                     String logContent = baos.toString(StandardCharsets.UTF_8.name());
 
-                    // Prioritize explicit error.txt
                     if (fileName.contains("error.txt") || sLastBlenderTraceback == null) {
                         sLastBlenderTraceback = extractTraceback(logContent);
                         sLastBlenderError = extractErrorLine(sLastBlenderTraceback);
@@ -834,7 +934,6 @@ public class GitHubWorkflowBridge {
             }
             if (capturing) {
                 tb.append(trimmed).append("\n");
-                // Stop capturing after the error line is recorded
                 if (trimmed.matches("^[A-Za-z0-9_]+Error:.*") || trimmed.matches("^[A-Za-z0-9_]+Exception:.*")) {
                     capturing = false;
                 }
