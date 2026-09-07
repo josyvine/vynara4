@@ -3,9 +3,11 @@ package com.example.ui;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -44,14 +46,18 @@ public class CreateFragment extends Fragment {
     private Spinner spinnerStyle, spinnerQuality, spinnerTarget, spinnerAutoMode;
 
     private final List<Uri> selectedImageUris = new ArrayList<>();
+    private Uri selectedScriptUri = null;
+    private String selectedScriptFileName = null;
+
     private ActivityResultLauncher<String> imagePickerLauncher;
+    private ActivityResultLauncher<String> scriptPickerLauncher;
     private ActivityResultLauncher<String> permissionLauncher;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Register launcher to select multiple reference images from phone storage
+        // Launcher for reference images
         imagePickerLauncher = registerForActivityResult(
                 new ActivityResultContracts.GetMultipleContents(),
                 uris -> {
@@ -65,14 +71,31 @@ public class CreateFragment extends Fragment {
                 }
         );
 
-        // Register launcher to request runtime storage/media permissions
+        // Launcher for custom Python script upload (.py)
+        scriptPickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.GetContent(),
+                uri -> {
+                    if (uri != null) {
+                        selectedScriptUri = uri;
+                        selectedScriptFileName = getFileNameFromUri(uri);
+                        if (selectedScriptFileName == null || selectedScriptFileName.isEmpty()) {
+                            selectedScriptFileName = "custom_script.py";
+                        }
+                        updateReferenceUI();
+                        etPrompt.setHint("Script attached: " + selectedScriptFileName + " (Prompt is optional)");
+                        Toast.makeText(getContext(), "Attached Python Script: " + selectedScriptFileName + "\nPrompt is now optional.", Toast.LENGTH_LONG).show();
+                    }
+                }
+        );
+
+        // Launcher for runtime permissions
         permissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(),
                 isGranted -> {
                     if (isGranted) {
                         openImagePicker();
                     } else {
-                        Toast.makeText(getContext(), "Permission denied. Cannot access reference images.", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(getContext(), "Permission denied. Cannot access storage.", Toast.LENGTH_SHORT).show();
                     }
                 }
         );
@@ -100,7 +123,7 @@ public class CreateFragment extends Fragment {
 
         setupSpinners();
 
-        // Dynamically resolve and update active model sub-header from ApiKeyManager
+        // Update active model badge
         if (getContext() != null) {
             ApiKeyManager keyMgr = new ApiKeyManager(getContext());
             String activeModel = keyMgr.getSelectedModel();
@@ -120,26 +143,42 @@ public class CreateFragment extends Fragment {
                 if (keyMgr.hasApiKey()) {
                     String displayName = (activeModel == null || activeModel.trim().isEmpty()) ? "gemini-1.5-flash" : activeModel;
                     tvConnectionStatus.setText("AI: " + displayName + " • Connected");
-                    tvConnectionStatus.setTextColor(0xFF00E676); // Green connection indicator
+                    tvConnectionStatus.setTextColor(0xFF00E676);
                 } else {
                     tvConnectionStatus.setText("AI: Disconnected (No API Key)");
-                    tvConnectionStatus.setTextColor(0xFFFF5252); // Red disconnected indicator
+                    tvConnectionStatus.setTextColor(0xFFFF5252);
                 }
             }
         }
 
+        // Add Reference Image button
         View btnAddRef = view.findViewById(R.id.btn_add_reference);
         if (btnAddRef != null) {
             btnAddRef.setOnClickListener(v -> checkPermissionAndPickImages());
+            // Convenience: Long press opens Python script file picker
+            btnAddRef.setOnLongClickListener(v -> {
+                openScriptPicker();
+                return true;
+            });
         }
 
-        // Tap reference count badge to clear attached images
+        // Dedicated Upload Script button (if present in XML layout)
+        int uploadScriptId = view.getResources().getIdentifier("btn_upload_script", "id", requireContext().getPackageName());
+        View btnUploadScript = (uploadScriptId != 0) ? view.findViewById(uploadScriptId) : null;
+        if (btnUploadScript != null) {
+            btnUploadScript.setOnClickListener(v -> openScriptPicker());
+        }
+
+        // Tap reference badge to clear images or script
         if (tvReferenceCount != null) {
             tvReferenceCount.setOnClickListener(v -> {
-                if (!selectedImageUris.isEmpty()) {
+                if (!selectedImageUris.isEmpty() || selectedScriptUri != null) {
                     selectedImageUris.clear();
+                    selectedScriptUri = null;
+                    selectedScriptFileName = null;
+                    etPrompt.setHint("Describe your 3D vision, structure, or mood...");
                     updateReferenceUI();
-                    Toast.makeText(getContext(), "Reference images cleared", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(getContext(), "Attachments cleared", Toast.LENGTH_SHORT).show();
                 }
             });
         }
@@ -158,7 +197,7 @@ public class CreateFragment extends Fragment {
             });
         }
 
-        // 5 Curated Demo Presets (Persisted demo templates)
+        // 5 Demo Presets
         setupPresetButton(view, R.id.preset_house, "Create a realistic modern villa with a swimming pool, wooden deck, interior lighting, furniture, and surrounding palm trees.");
         setupPresetButton(view, R.id.preset_human, "Create a stylized rigged superhero character with suit details, heroic posture, and skeletal animation tracks.");
         setupPresetButton(view, R.id.preset_dog, "Create an animated quadruped dog model with skeletal rig, fur material, and a running cycle animation.");
@@ -170,15 +209,32 @@ public class CreateFragment extends Fragment {
         if (btnGenerate != null) {
             btnGenerate.setOnClickListener(v -> {
                 String prompt = etPrompt.getText().toString().trim();
-                if (prompt.isEmpty()) {
-                    prompt = "Modern Villa & Swimming Pool";
+
+                // If a Python script is uploaded, prompt is completely optional
+                if (selectedScriptUri != null) {
+                    if (prompt.isEmpty()) {
+                        prompt = "Custom Script: " + (selectedScriptFileName != null ? selectedScriptFileName : "custom_model.py");
+                    }
+                } else {
+                    if (prompt.isEmpty()) {
+                        prompt = "Modern Villa & Swimming Pool";
+                    }
                 }
 
                 String style = spinnerStyle.getSelectedItem() != null ? spinnerStyle.getSelectedItem().toString() : "Photorealistic";
                 String targetEngine = spinnerTarget.getSelectedItem() != null ? spinnerTarget.getSelectedItem().toString() : "Blender Native";
 
-                // Cache reference images locally so background workers and Gemini Vision have direct file access
                 List<String> refUrisStrList = new ArrayList<>();
+
+                // If custom script is attached, cache it locally and append as first entry
+                if (selectedScriptUri != null) {
+                    String cachedScriptPath = cacheCustomScript(requireContext(), selectedScriptUri);
+                    if (cachedScriptPath != null) {
+                        refUrisStrList.add(cachedScriptPath);
+                    }
+                }
+
+                // Cache reference images
                 for (Uri uri : selectedImageUris) {
                     if (uri != null) {
                         String localFilePath = cacheReferenceImage(requireContext(), uri);
@@ -217,17 +273,39 @@ public class CreateFragment extends Fragment {
         }
     }
 
+    private void openScriptPicker() {
+        if (scriptPickerLauncher != null) {
+            scriptPickerLauncher.launch("*/*");
+        }
+    }
+
     private void updateReferenceUI() {
         if (tvReferenceCount != null) {
-            int count = selectedImageUris.size();
-            tvReferenceCount.setText(count + " reference(s) added (Tap to clear)");
+            int imageCount = selectedImageUris.size();
+            StringBuilder sb = new StringBuilder();
+            if (selectedScriptFileName != null) {
+                sb.append("📜 ").append(selectedScriptFileName).append(" (Attached) ");
+            }
+            if (imageCount > 0) {
+                sb.append("• ").append(imageCount).append(" image(s) ");
+            }
+            if (selectedScriptFileName != null || imageCount > 0) {
+                sb.append("(Tap to clear)");
+            }
+            tvReferenceCount.setText(sb.toString());
         }
     }
 
     private void setupPresetButton(View root, int resId, String promptText) {
         View btn = root.findViewById(resId);
         if (btn != null) {
-            btn.setOnClickListener(v -> etPrompt.setText(promptText));
+            btn.setOnClickListener(v -> {
+                selectedScriptUri = null;
+                selectedScriptFileName = null;
+                updateReferenceUI();
+                etPrompt.setHint("Describe your 3D vision, structure, or mood...");
+                etPrompt.setText(promptText);
+            });
         }
     }
 
@@ -255,10 +333,34 @@ public class CreateFragment extends Fragment {
         spinnerAutoMode.setAdapter(adapterMode);
     }
 
-    /**
-     * Copies selected Android content URI into a persistent local file in the app cache
-     * so background threads and Gemini Vision can access it without permission security exceptions.
-     */
+    private String cacheCustomScript(Context context, Uri scriptUri) {
+        if (scriptUri == null) return null;
+        try {
+            File cacheFolder = new File(context.getCacheDir(), "scripts");
+            if (!cacheFolder.exists()) cacheFolder.mkdirs();
+
+            File destFile = new File(cacheFolder, "custom_user_script.py");
+
+            try (InputStream in = context.getContentResolver().openInputStream(scriptUri);
+                 FileOutputStream out = new FileOutputStream(destFile)) {
+
+                if (in == null) return null;
+
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                }
+                out.flush();
+            }
+
+            return destFile.getAbsolutePath();
+        } catch (Exception e) {
+            VynaraLogger.e("CreateFragment: Failed caching custom script: " + e.getMessage());
+            return null;
+        }
+    }
+
     private String cacheReferenceImage(Context context, Uri contentUri) {
         if (contentUri == null) return null;
 
@@ -293,6 +395,30 @@ public class CreateFragment extends Fragment {
             VynaraLogger.e("CreateFragment: Failed caching reference image: " + e.getMessage());
             return contentUri.toString();
         }
+    }
+
+    private String getFileNameFromUri(Uri uri) {
+        if (uri == null) return null;
+        String fileName = null;
+        try (Cursor cursor = requireContext().getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0) {
+                    fileName = cursor.getString(nameIndex);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (fileName == null) {
+            String path = uri.getPath();
+            if (path != null) {
+                int cut = path.lastIndexOf('/');
+                if (cut != -1) {
+                    fileName = path.substring(cut + 1);
+                }
+            }
+        }
+        return fileName;
     }
 
     public List<Uri> getSelectedImageUris() {
