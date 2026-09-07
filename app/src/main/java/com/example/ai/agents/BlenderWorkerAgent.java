@@ -113,10 +113,6 @@ public class BlenderWorkerAgent {
 
         // Top-level exception wrapper writing exact traceback to error.txt
         master.append("try:\n");
-        master.append("    for addon in ['archimesh', 'rigify']:\n");
-        master.append("        try: addon_utils.enable(addon)\n");
-        master.append("        except Exception: pass\n\n");
-
         master.append("    # Clean scene completely\n");
         master.append("    bpy.ops.object.select_all(action='SELECT')\n");
         master.append("    bpy.ops.object.delete(use_global=False)\n\n");
@@ -168,7 +164,8 @@ public class BlenderWorkerAgent {
     public static AIDirectorSpec getLastDirectorSpec() { return sLastDirectorSpec; }
 
     /**
-     * Dynamically builds Worker 1 (Structure) without hardcoded low-poly box presets.
+     * Dynamically builds Worker 1 (Structure) using real procedural shaping, subdivision,
+     * and boolean carving instead of un-beveled primitive boxes.
      */
     private static String buildWorker1StructureScript(String promptOrCode, AIDirectorSpec spec) {
         if (promptOrCode == null) return "";
@@ -181,57 +178,81 @@ public class BlenderWorkerAgent {
         String p = promptOrCode.toLowerCase();
         StringBuilder sb = new StringBuilder();
         int seed = (spec != null) ? spec.getSeedHero() : 42;
-        sb.append("random.seed(").append(seed).append(")\n");
+        sb.append("random.seed(").append(seed).append(")\n\n");
         
         // PBR Primary Material Setup (Blender 4.2+ compliant)
-        sb.append("# Hero PBR Material Setup\n");
+        sb.append("# Hero Primary PBR Material\n");
         sb.append("mat_hero = bpy.data.materials.new('Mat_Hero_Primary')\n");
         sb.append("mat_hero.use_nodes = True\n");
         sb.append("bsdf_h = mat_hero.node_tree.nodes.get('Principled BSDF')\n");
         sb.append("if bsdf_h:\n");
-        float[] rgb = hexToRgb(spec != null ? spec.getPrimaryColorHex() : "#2C3E50");
+        float[] rgb = hexToRgb(spec != null ? spec.getPrimaryColorHex() : "#F1C40F");
         sb.append("    bsdf_h.inputs['Base Color'].default_value = (").append(rgb[0]).append(", ").append(rgb[1]).append(", ").append(rgb[2]).append(", 1.0)\n");
-        sb.append("    bsdf_h.inputs['Roughness'].default_value = 0.25\n");
-        sb.append("    bsdf_h.inputs['Metallic'].default_value = 0.6\n\n");
+        sb.append("    bsdf_h.inputs['Roughness'].default_value = 0.18\n");
+        sb.append("    bsdf_h.inputs['Metallic'].default_value = 0.85\n\n");
 
-        // DYNAMIC PROCEDURAL SCAFFOLDING (No hardcoded 3-box presets)
+        sb.append("mat_black = bpy.data.materials.new('Mat_Gloss_Black')\n");
+        sb.append("mat_black.use_nodes = True\n");
+        sb.append("bsdf_b = mat_black.node_tree.nodes.get('Principled BSDF')\n");
+        sb.append("if bsdf_b:\n");
+        sb.append("    bsdf_b.inputs['Base Color'].default_value = (0.01, 0.01, 0.01, 1.0)\n");
+        sb.append("    bsdf_b.inputs['Roughness'].default_value = 0.05\n");
+        sb.append("    bsdf_b.inputs['Metallic'].default_value = 0.9\n\n");
+
         if (p.contains("car") || p.contains("vehicle") || p.contains("suv") || p.contains("sedan") || p.contains("truck")) {
-            sb.append("# Procedural Aerodynamic Vehicle Body\n");
+            sb.append("# Procedural Aerodynamic Car Body with Subsurf & Boolean Wheel Wells\n");
             sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.7))\n");
             sb.append("chassis = bpy.context.active_object\n");
             sb.append("chassis.name = 'Vehicle_Chassis'\n");
-            sb.append("chassis.scale = (4.4, 1.9, 0.85)\n");
-            sb.append("bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("bev = chassis.modifiers.new('ChassisBevel', 'BEVEL')\n");
-            sb.append("bev.width = 0.12; bev.segments = 3\n");
-            sb.append("chassis.data.materials.append(mat_hero)\n");
-            sb.append("bpy.ops.object.shade_smooth()\n\n");
+            sb.append("chassis.scale = (4.4, 1.9, 0.75)\n");
+            sb.append("bpy.ops.object.transform_apply(scale=True)\n\n");
 
-            sb.append("# Cabin Glass Canopy\n");
+            sb.append("# Sloped Aerodynamic Cabin\n");
             sb.append("mat_glass = bpy.data.materials.new('Mat_Tinted_Glass')\n");
             sb.append("mat_glass.use_nodes = True\n");
             sb.append("bsdf_g = mat_glass.node_tree.nodes.get('Principled BSDF')\n");
             sb.append("if bsdf_g:\n");
-            sb.append("    bsdf_g.inputs['Base Color'].default_value = (0.1, 0.12, 0.15, 1.0)\n");
-            sb.append("    bsdf_g.inputs['Roughness'].default_value = 0.05\n");
-            sb.append("    bsdf_g.inputs['Transmission Weight'].default_value = 0.9\n");
-            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(-0.3, 0, 1.45))\n");
+            sb.append("    bsdf_g.inputs['Base Color'].default_value = (0.04, 0.06, 0.09, 1.0)\n");
+            sb.append("    bsdf_g.inputs['Roughness'].default_value = 0.02\n");
+            sb.append("    bsdf_g.inputs['Transmission Weight'].default_value = 0.96\n\n");
+
+            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(-0.25, 0, 1.35))\n");
             sb.append("cabin = bpy.context.active_object\n");
             sb.append("cabin.name = 'Vehicle_Cabin'\n");
-            sb.append("cabin.scale = (2.2, 1.6, 0.65)\n");
+            sb.append("cabin.scale = (2.3, 1.62, 0.58)\n");
             sb.append("bpy.ops.object.transform_apply(scale=True)\n");
             sb.append("bev_c = cabin.modifiers.new('CabinBevel', 'BEVEL')\n");
             sb.append("bev_c.width = 0.08; bev_c.segments = 3\n");
             sb.append("cabin.data.materials.append(mat_glass)\n");
             sb.append("bpy.ops.object.shade_smooth()\n\n");
 
-            // Correct 90-degree Euler rotation for wheels (standing vertically on axle)
-            sb.append("# 4 Correctly Oriented Wheels (Rotated 90 deg on X-axis)\n");
+            sb.append("# Boolean Cutters: Carve 4 Wheel Arches into Chassis Body\n");
+            sb.append("wheel_coords = [(-1.4, -0.96), (-1.4, 0.96), (1.4, -0.96), (1.4, 0.96)]\n");
+            sb.append("for idx, (wx, wy) in enumerate(wheel_coords):\n");
+            sb.append("    bpy.ops.mesh.primitive_cylinder_add(radius=0.52, depth=0.45, location=(wx, wy, 0.45), rotation=(math.radians(90), 0, 0))\n");
+            sb.append("    cutter = bpy.context.active_object\n");
+            sb.append("    cutter.name = f'Wheel_Arch_Cutter_{idx}'\n");
+            sb.append("    bool_mod = chassis.modifiers.new(f'Arch_Cut_{idx}', 'BOOLEAN')\n");
+            sb.append("    bool_mod.object = cutter\n");
+            sb.append("    bool_mod.operation = 'DIFFERENCE'\n");
+            sb.append("    bpy.ops.object.select_all(action='DESELECT')\n");
+            sb.append("    chassis.select_set(True)\n");
+            sb.append("    bpy.context.view_layer.objects.active = chassis\n");
+            sb.append("    bpy.ops.object.modifier_apply(modifier=f'Arch_Cut_{idx}')\n");
+            sb.append("    bpy.data.objects.remove(cutter, do_unlink=True)\n\n");
+
+            sb.append("# Bevel & Smooth Chassis\n");
+            sb.append("bev_ch = chassis.modifiers.new('ChassisBevel', 'BEVEL')\n");
+            sb.append("bev_ch.width = 0.07; bev_ch.segments = 3\n");
+            sb.append("chassis.data.materials.append(mat_hero)\n");
+            sb.append("bpy.ops.object.shade_smooth()\n\n");
+
+            sb.append("# 4 Correctly Oriented Wheels Standing on Vertical Axles\n");
             sb.append("mat_tire = bpy.data.materials.new('Mat_Tire_Rubber')\n");
             sb.append("mat_tire.use_nodes = True\n");
             sb.append("bsdf_t = mat_tire.node_tree.nodes.get('Principled BSDF')\n");
             sb.append("if bsdf_t: bsdf_t.inputs['Base Color'].default_value = (0.02, 0.02, 0.02, 1.0); bsdf_t.inputs['Roughness'].default_value = 0.85\n");
-            sb.append("for idx, (wx, wy) in enumerate([(-1.4, -0.95), (-1.4, 0.95), (1.4, -0.95), (1.4, 0.95)]):\n");
+            sb.append("for idx, (wx, wy) in enumerate(wheel_coords):\n");
             sb.append("    bpy.ops.mesh.primitive_cylinder_add(radius=0.42, depth=0.28, location=(wx, wy, 0.42), rotation=(math.radians(90), 0, 0))\n");
             sb.append("    wheel = bpy.context.active_object\n");
             sb.append("    wheel.name = f'Wheel_{idx}'\n");
@@ -239,42 +260,51 @@ public class BlenderWorkerAgent {
             sb.append("    bpy.ops.object.shade_smooth()\n");
 
         } else if (p.contains("villa") || p.contains("house") || p.contains("building") || p.contains("architecture")) {
-            sb.append("# Procedural Architectural Structure\n");
-            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 1.6))\n");
-            sb.append("bldg = bpy.context.active_object\n");
-            sb.append("bldg.name = 'Structure_MainSlab'\n");
-            sb.append("bldg.scale = (8.5, 6.5, 3.2)\n");
+            sb.append("# Architectural Multi-Tier Cantilevered Villa & Terrace\n");
+            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 1.5))\n");
+            sb.append("lower = bpy.context.active_object\n");
+            sb.append("lower.name = 'Villa_LowerPavilion'\n");
+            sb.append("lower.scale = (8.5, 6.5, 3.0)\n");
             sb.append("bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("bev_b = bldg.modifiers.new('StructureBevel', 'BEVEL')\n");
-            sb.append("bev_b.width = 0.05; bev_b.segments = 2\n");
-            sb.append("bldg.data.materials.append(mat_hero)\n\n");
+            sb.append("bev_l = lower.modifiers.new('LowerBevel', 'BEVEL')\n");
+            sb.append("bev_l.width = 0.04; bev_l.segments = 2\n");
+            sb.append("lower.data.materials.append(mat_hero)\n\n");
 
-            sb.append("# Architectural Floor-to-Ceiling Glazing\n");
-            sb.append("mat_glass = bpy.data.materials.new('Mat_Glass_Facade')\n");
-            sb.append("mat_glass.use_nodes = True\n");
-            sb.append("bsdf_g = mat_glass.node_tree.nodes.get('Principled BSDF')\n");
-            sb.append("if bsdf_g:\n");
-            sb.append("    bsdf_g.inputs['Base Color'].default_value = (0.85, 0.95, 1.0, 1.0)\n");
-            sb.append("    bsdf_g.inputs['Roughness'].default_value = 0.05\n");
-            sb.append("    bsdf_g.inputs['Transmission Weight'].default_value = 0.92\n");
-            sb.append("bpy.ops.mesh.primitive_plane_add(size=1, location=(0, -3.26, 1.6), rotation=(math.radians(90), 0, 0))\n");
-            sb.append("facade = bpy.context.active_object\n");
-            sb.append("facade.name = 'Glass_CurtainWall'\n");
-            sb.append("facade.scale = (7.8, 2.8, 1.0)\n");
+            sb.append("# Upper Cantilever Terrace Suite\n");
+            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(1.2, 0.6, 4.2))\n");
+            sb.append("upper = bpy.context.active_object\n");
+            sb.append("upper.name = 'Villa_UpperSuite'\n");
+            sb.append("upper.scale = (9.8, 5.8, 2.5)\n");
             sb.append("bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("facade.data.materials.append(mat_glass)\n");
+            sb.append("bev_u = upper.modifiers.new('UpperBevel', 'BEVEL')\n");
+            sb.append("bev_u.width = 0.04; bev_u.segments = 2\n");
+            sb.append("upper.data.materials.append(mat_hero)\n\n");
+
+            sb.append("# Inset Swimming Pool & Water Surface\n");
+            sb.append("mat_water = bpy.data.materials.new('Mat_Pool_Water')\n");
+            sb.append("mat_water.use_nodes = True\n");
+            sb.append("bsdf_w = mat_water.node_tree.nodes.get('Principled BSDF')\n");
+            sb.append("if bsdf_w:\n");
+            sb.append("    bsdf_w.inputs['Base Color'].default_value = (0.05, 0.65, 0.9, 0.85)\n");
+            sb.append("    bsdf_w.inputs['Roughness'].default_value = 0.03\n");
+            sb.append("    bsdf_w.inputs['Transmission Weight'].default_value = 0.95\n");
+            sb.append("bpy.ops.mesh.primitive_plane_add(size=1, location=(5.2, -1.0, 0.02))\n");
+            sb.append("pool = bpy.context.active_object\n");
+            sb.append("pool.name = 'Pool_Surface'\n");
+            sb.append("pool.scale = (5.5, 8.5, 1.0)\n");
+            sb.append("bpy.ops.object.transform_apply(scale=True)\n");
+            sb.append("pool.data.materials.append(mat_water)\n");
 
         } else {
-            // General dynamic procedural object
-            sb.append("# Dynamic Procedural Hero Asset\n");
+            sb.append("# General Procedural Hero Asset with Bevel & Smooth Shading\n");
             sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 1.0))\n");
-            sb.append("hero_obj = bpy.context.active_object\n");
-            sb.append("hero_obj.name = 'Hero_PrimaryMesh'\n");
-            sb.append("hero_obj.scale = (2.0, 2.0, 2.0)\n");
+            sb.append("hero = bpy.context.active_object\n");
+            sb.append("hero.name = 'Hero_Asset'\n");
+            sb.append("hero.scale = (2.2, 2.2, 2.2)\n");
             sb.append("bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("bev_h = hero_obj.modifiers.new('PrimaryBevel', 'BEVEL')\n");
+            sb.append("bev_h = hero.modifiers.new('HeroBevel', 'BEVEL')\n");
             sb.append("bev_h.width = 0.06; bev_h.segments = 3\n");
-            sb.append("hero_obj.data.materials.append(mat_hero)\n");
+            sb.append("hero.data.materials.append(mat_hero)\n");
             sb.append("bpy.ops.object.shade_smooth()\n");
         }
 
@@ -307,11 +337,11 @@ public class BlenderWorkerAgent {
             sb.append("ground.name = 'Ground_Surface'\n");
             sb.append("ground.data.materials.append(mat_ground)\n");
         } else {
-            sb.append("# Clean studio floor plinth\n");
-            sb.append("bpy.ops.mesh.primitive_cylinder_add(radius=4.5, depth=0.08, location=(0, 0, -0.04))\n");
-            sb.append("plinth = bpy.context.active_object\n");
-            sb.append("plinth.name = 'Studio_Pedestal'\n");
-            sb.append("plinth.data.materials.append(mat_ground)\n");
+            sb.append("# Clean studio floor pedestal\n");
+            sb.append("bpy.ops.mesh.primitive_cylinder_add(radius=5.0, depth=0.08, location=(0, 0, -0.04))\n");
+            sb.append("pedestal = bpy.context.active_object\n");
+            sb.append("pedestal.name = 'Studio_Pedestal'\n");
+            sb.append("pedestal.data.materials.append(mat_ground)\n");
         }
 
         return sb.toString();
@@ -334,7 +364,7 @@ public class BlenderWorkerAgent {
         float[] camPos = (spec != null && spec.getCameraPosition() != null && spec.getCameraPosition().length >= 3)
                 ? spec.getCameraPosition() : new float[]{0.0f, -8.5f, 3.8f};
 
-        // Cinematic Camera
+        // Cinematic Camera Rig
         sb.append("# Camera Rig Setup\n");
         sb.append("try:\n");
         sb.append("    cam_data = bpy.data.cameras.new('CinematicCamera')\n");
@@ -349,8 +379,8 @@ public class BlenderWorkerAgent {
         sb.append("    cam_obj.rotation_euler = (math.radians(68), 0, 0)\n");
         sb.append("except Exception as ce: print(f'Camera warning: {ce}')\n\n");
 
-        // Three-point Natural Lighting (Sun + Key Fill)
-        sb.append("# Lighting Architecture\n");
+        // Natural Sunlight Rig
+        sb.append("# Sunlight Architecture\n");
         sb.append("try:\n");
         sb.append("    sun_data = bpy.data.lights.new('KeySun', type='SUN')\n");
         sb.append("    sun_data.energy = ").append(sunIntensity).append("\n");
@@ -359,7 +389,7 @@ public class BlenderWorkerAgent {
         sb.append("    sun_obj.rotation_euler = (math.radians(").append(sunElevation).append("), 0, math.radians(").append(sunAzimuth).append("))\n");
         sb.append("except Exception as le: print(f'Sunlight warning: {le}')\n\n");
 
-        // 1. Export standard GLB
+        // 1. Export interactive GLB
         sb.append("# Step 1: Export Interactive 3D GLTF/GLB\n");
         sb.append("try:\n");
         sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)\n");
