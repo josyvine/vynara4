@@ -33,6 +33,19 @@ public class GeminiApiClient {
             "4. Ensure output directory exists and export to standard GLB: `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)`.\n" +
             "5. Output ONLY raw Python code without extra conversational commentary.";
 
+    // Solution B: Targeted single-turn repair instruction for fixing terminal tracebacks
+    private static final String BLENDER_REPAIR_SYSTEM_INSTRUCTION =
+            "You are an expert Blender Python (`bpy`) debugger and autonomous code repair specialist.\n" +
+            "A cloud runner executing headless Blender encountered a runtime error while executing a script.\n" +
+            "You are provided:\n" +
+            "1. The original creative user prompt (what was being built)\n" +
+            "2. The exact Blender terminal error / traceback message from error.txt\n" +
+            "3. The faulty Python script that failed\n\n" +
+            "RULES:\n" +
+            "1. Analyze the exact traceback line number and error message (e.g., enum mismatch, invalid operator, syntax error).\n" +
+            "2. Fix the error while strictly preserving all geometry, lighting, materials, and GLB export commands from the prompt.\n" +
+            "3. Output ONLY executable Python code inside a single ```python code block. Do NOT include explanations, conversational filler, or commentary.";
+
     private final OkHttpClient client;
     private final Handler mainHandler;
 
@@ -126,23 +139,23 @@ public class GeminiApiClient {
     }
 
     public void generateContent(String apiKey, String modelId, String systemInstruction, String userPrompt, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, false, callback);
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, false, null, callback);
     }
 
     public void generateContent(String apiKey, String modelId, String systemInstruction, String userPrompt, List<String> base64Images, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, false, callback);
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, false, null, callback);
     }
 
     public void generateStructuredJson(String apiKey, String modelId, String systemInstruction, String userPrompt, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, true, callback);
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, true, null, callback);
     }
 
     public void generateStructuredJson(String apiKey, String modelId, String systemInstruction, String userPrompt, List<String> base64Images, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, true, callback);
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, true, null, callback);
     }
 
     public void generateBlenderScript(String apiKey, String modelId, String userPrompt, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, BLENDER_SYSTEM_INSTRUCTION, userPrompt, null, false, new ApiCallback<String>() {
+        generateContentInternal(apiKey, modelId, BLENDER_SYSTEM_INSTRUCTION, userPrompt, null, false, null, new ApiCallback<String>() {
             @Override
             public void onSuccess(String result) {
                 String cleanedScript = cleanPythonOutput(result);
@@ -157,7 +170,7 @@ public class GeminiApiClient {
     }
 
     public void generateBlenderScript(String apiKey, String modelId, String systemInstruction, String userPrompt, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, false, new ApiCallback<String>() {
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, null, false, null, new ApiCallback<String>() {
             @Override
             public void onSuccess(String result) {
                 String cleanedScript = cleanPythonOutput(result);
@@ -172,7 +185,7 @@ public class GeminiApiClient {
     }
 
     public void generateBlenderScript(String apiKey, String modelId, String systemInstruction, String userPrompt, List<String> base64Images, final ApiCallback<String> callback) {
-        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, false, new ApiCallback<String>() {
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, false, null, new ApiCallback<String>() {
             @Override
             public void onSuccess(String result) {
                 String cleanedScript = cleanPythonOutput(result);
@@ -186,7 +199,58 @@ public class GeminiApiClient {
         });
     }
 
-    private void generateContentInternal(String apiKey, String modelId, String systemInstruction, String userPrompt, List<String> base64Images, boolean enforceJson, final ApiCallback<String> callback) {
+    /**
+     * SOLUTION B: Dedicated Single-Turn Script Repair Call
+     * Submits the user prompt, faulty script, and exact error traceback to Gemini with deterministic low temperature.
+     */
+    public void repairBlenderScript(String apiKey,
+                                    String modelId,
+                                    String userPrompt,
+                                    String failedScript,
+                                    String errorTraceback,
+                                    final ApiCallback<String> callback) {
+        StringBuilder repairPrompt = new StringBuilder();
+        repairPrompt.append("=== WHAT WAS BEING BUILT (USER PROMPT) ===\n")
+                .append(userPrompt != null ? userPrompt : "3D Scene Asset")
+                .append("\n\n")
+                .append("=== EXACT TERMINAL ERROR TRACEBACK (FROM error.txt) ===\n")
+                .append(errorTraceback != null ? errorTraceback : "Unknown Blender Runtime Error")
+                .append("\n\n")
+                .append("=== FAULTY SCRIPT THAT FAILED ===\n")
+                .append(failedScript != null ? failedScript : "");
+
+        generateContentInternal(apiKey, modelId, BLENDER_REPAIR_SYSTEM_INSTRUCTION, repairPrompt.toString(), null, false, 0.15f, new ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                String cleaned = cleanPythonOutput(result);
+                callback.onSuccess(cleaned);
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                callback.onError(errorMessage);
+            }
+        });
+    }
+
+    private void generateContentInternal(String apiKey,
+                                         String modelId,
+                                         String systemInstruction,
+                                         String userPrompt,
+                                         List<String> base64Images,
+                                         boolean enforceJson,
+                                         final ApiCallback<String> callback) {
+        generateContentInternal(apiKey, modelId, systemInstruction, userPrompt, base64Images, enforceJson, null, callback);
+    }
+
+    private void generateContentInternal(String apiKey,
+                                         String modelId,
+                                         String systemInstruction,
+                                         String userPrompt,
+                                         List<String> base64Images,
+                                         boolean enforceJson,
+                                         Float temperature,
+                                         final ApiCallback<String> callback) {
         if (apiKey == null || apiKey.trim().isEmpty()) {
             callback.onError("Gemini API key is missing. Please configure it in Settings.");
             return;
@@ -241,9 +305,20 @@ public class GeminiApiClient {
             contents.put(userMsg);
             root.put("contents", contents);
 
+            JSONObject generationConfig = new JSONObject();
+            boolean hasConfig = false;
+
             if (enforceJson) {
-                JSONObject generationConfig = new JSONObject();
                 generationConfig.put("responseMimeType", "application/json");
+                hasConfig = true;
+            }
+
+            if (temperature != null) {
+                generationConfig.put("temperature", temperature.doubleValue());
+                hasConfig = true;
+            }
+
+            if (hasConfig) {
                 root.put("generationConfig", generationConfig);
             }
 
@@ -332,6 +407,39 @@ public class GeminiApiClient {
     }
 
     public String cleanPythonOutput(String input) {
-        return cleanOutput(input);
+        if (input == null) return "";
+        String text = input.trim();
+
+        // Extract code inside ```python ... ``` block if present
+        int codeBlockStart = text.indexOf("```python");
+        if (codeBlockStart != -1) {
+            int contentStart = codeBlockStart + 9;
+            int codeBlockEnd = text.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return text.substring(contentStart, codeBlockEnd).trim();
+            } else {
+                return text.substring(contentStart).trim();
+            }
+        }
+
+        // Extract code inside generic ``` ... ``` block
+        int genericBlockStart = text.indexOf("```");
+        if (genericBlockStart != -1) {
+            int contentStart = genericBlockStart + 3;
+            int codeBlockEnd = text.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return text.substring(contentStart, codeBlockEnd).trim();
+            } else {
+                return text.substring(contentStart).trim();
+            }
+        }
+
+        // If no code block markdown fences exist, trim any conversational preamble before import bpy
+        int importIdx = text.indexOf("import bpy");
+        if (importIdx > 0) {
+            text = text.substring(importIdx);
+        }
+
+        return cleanOutput(text);
     }
 }
