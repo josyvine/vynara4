@@ -1,8 +1,5 @@
 package com.example.ai;
 
-import com.example.ai.AIContext;
-import com.example.ai.AIOrchestrator;
-import com.example.ai.GeminiApiClient;
 import com.example.engine.Scene;
 import com.example.tools.ToolExecutor;
 import com.example.tools.ToolOperation;
@@ -15,11 +12,14 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class AICorrector {
     private final ToolExecutor toolExecutor;
     private final AIOrchestrator aiOrchestrator;
     private final Scene activeScene;
+
+    private static final int SCRIPT_REPAIR_TIMEOUT_SECONDS = 35;
 
     public AICorrector(ToolExecutor toolExecutor, AIOrchestrator aiOrchestrator, Scene activeScene) {
         this.toolExecutor = toolExecutor;
@@ -28,8 +28,8 @@ public class AICorrector {
     }
 
     /**
-     * Evaluates validation inspection results and executes the full AI correction loop:
-     * Generate -> Validate -> Inspect -> Problem Detection -> Repair Selection -> Correction -> Re-validate.
+     * Evaluates validation inspection results and executes the internal AI correction loop:
+     * Generate -> Validate -> Inspect -> Problem Detection -> Repair Selection -> Correction.
      */
     public boolean applyCorrections(List<ValidationResult> inspectionResults) {
         if (inspectionResults == null || inspectionResults.isEmpty()) {
@@ -37,11 +37,11 @@ public class AICorrector {
         }
 
         boolean allCorrectionsSuccessful = true;
-        
+
         for (ValidationResult vr : inspectionResults) {
-            if (vr.getSeverity() == ValidationResult.Severity.ERROR || 
+            if (vr.getSeverity() == ValidationResult.Severity.ERROR ||
                 vr.getSeverity() == ValidationResult.Severity.CRITICAL) {
-                
+
                 boolean repairExecuted = executeIntelligenceDrivenRepair(vr);
                 if (!repairExecuted) {
                     allCorrectionsSuccessful = false;
@@ -53,34 +53,25 @@ public class AICorrector {
     }
 
     /**
-     * Multi-Turn AI Script Repair: Analyzes a failed Blender Python script and its exact
-     * terminal traceback to synthesize a corrected script matching the user's prompt.
+     * SOLUTION B: AI Script Corrector (Async)
+     * Analyzes the original user prompt, the faulty Blender script, and the exact terminal traceback
+     * from error.txt, asking Gemini to return an executable, zero-error replacement.
      */
-    public void correctBlenderScript(String userPrompt, 
-                                     String failedScript, 
-                                     String errorMessage, 
+    public void correctBlenderScript(String userPrompt,
+                                     String failedScript,
+                                     String errorTraceback,
                                      final GeminiApiClient.ApiCallback<String> callback) {
         if (aiOrchestrator == null || aiOrchestrator.getApiKeyManager() == null || !aiOrchestrator.getApiKeyManager().hasApiKey()) {
-            if (callback != null) callback.onError("Cannot repair script: Gemini API key missing.");
+            if (callback != null) {
+                callback.onError("Cannot repair script: Gemini API key is missing or unconfigured.");
+            }
             return;
         }
 
-        String repairInstruction = "You are an expert Blender Python (`bpy`) engineer.\n" +
-                "A generated Blender script failed during headless execution on the cloud worker.\n" +
-                "Analyze the original user prompt, the failed script, and the exact Blender terminal error message.\n" +
-                "Fix the syntax/API/operator/enum error and return ONLY the complete corrected Python script inside a single ```python block.\n" +
-                "RULES:\n" +
-                "1. Output ONLY executable Python code inside ```python. No commentary.\n" +
-                "2. Ensure all mesh operators use `bpy.ops.mesh.primitive_...` (never `_create` or `bpy.ops.object.mesh.`).\n" +
-                "3. Ensure all lighting operators use `bpy.ops.object.light_add` (never `bpy.ops.light.add`).\n" +
-                "4. In `bpy.data.textures.new(name, type=...)`, type MUST be one of ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'). Never invent unlisted types like 'STORM'.\n" +
-                "5. Preserve all original multi-part 3D geometry and materials from the user's prompt.";
+        String repairInstruction = buildBlenderRepairSystemInstruction();
+        String repairPrompt = buildBlenderRepairUserPrompt(userPrompt, failedScript, errorTraceback);
 
-        String repairPrompt = "USER PROMPT: " + userPrompt + "\n\n" +
-                "EXACT BLENDER TERMINAL ERROR / TRACEBACK:\n" + errorMessage + "\n\n" +
-                "FAILED SCRIPT:\n" + failedScript;
-
-        VynaraLogger.system("AICorrector: Dispatching script repair request to Gemini API...");
+        VynaraLogger.system("AICorrector: Dispatching single-turn script repair request to Gemini...");
 
         aiOrchestrator.getApiClient().generateContent(
                 aiOrchestrator.getApiKeyManager().getApiKey(),
@@ -90,26 +81,130 @@ public class AICorrector {
                 new GeminiApiClient.ApiCallback<String>() {
                     @Override
                     public void onSuccess(String result) {
-                        String cleaned = aiOrchestrator.getApiClient().cleanPythonOutput(result);
-                        if (cleaned.isEmpty()) {
-                            if (callback != null) callback.onError("Gemini returned empty repair script.");
+                        String cleanedScript = cleanAndValidateScript(result);
+                        if (cleanedScript.isEmpty()) {
+                            VynaraLogger.e("AICorrector: Gemini returned an empty or invalid repair script.");
+                            if (callback != null) {
+                                callback.onError("Gemini returned empty or invalid repair script.");
+                            }
                         } else {
-                            VynaraLogger.system("AICorrector: Successfully repaired Python script (" + cleaned.length() + " chars).");
-                            if (callback != null) callback.onSuccess(cleaned);
+                            VynaraLogger.system("AICorrector: Successfully repaired Python script (" + cleanedScript.length() + " chars).");
+                            if (callback != null) {
+                                callback.onSuccess(cleanedScript);
+                            }
                         }
                     }
 
                     @Override
                     public void onError(String error) {
-                        VynaraLogger.e("AICorrector: Script repair failed: " + error);
-                        if (callback != null) callback.onError(error);
+                        VynaraLogger.e("AICorrector: Script repair failed from Gemini API: " + error);
+                        if (callback != null) {
+                            callback.onError(error);
+                        }
                     }
                 }
         );
     }
 
     /**
-     * Consults Gemini AI for a repair plan, falling back to local deterministic repairs if offline.
+     * SOLUTION B: AI Script Corrector (Sync / Blocking)
+     * Convenience method for background execution threads that need to synchronously wait
+     * for the repaired script.
+     */
+    public String correctBlenderScriptSync(String userPrompt, String failedScript, String errorTraceback) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> repairedScriptRef = new AtomicReference<>(null);
+
+        correctBlenderScript(userPrompt, failedScript, errorTraceback, new GeminiApiClient.ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                repairedScriptRef.set(result);
+                latch.countDown();
+            }
+
+            @Override
+            public void onError(String error) {
+                VynaraLogger.e("AICorrector (Sync): Repair error: " + error);
+                latch.countDown();
+            }
+        });
+
+        try {
+            boolean completed = latch.await(SCRIPT_REPAIR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!completed) {
+                VynaraLogger.e("AICorrector (Sync): Script repair timed out after " + SCRIPT_REPAIR_TIMEOUT_SECONDS + "s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            VynaraLogger.e("AICorrector (Sync): Repair interrupted: " + e.getMessage());
+        }
+
+        return repairedScriptRef.get();
+    }
+
+    private String buildBlenderRepairSystemInstruction() {
+        return "You are an elite Blender Python (`bpy`) core engineer and debugger specializing in automated 3D asset generation.\n" +
+                "A cloud worker running headless Blender failed with a runtime exception/traceback while executing a generated script.\n" +
+                "Your objective is to fix the exact error identified in the traceback, preserve all 3D assets/materials from the prompt, and output the entire corrected script.\n\n" +
+                "CRITICAL REQUIREMENTS:\n" +
+                "1. Output ONLY the fully corrected, executable Python script inside a single ```python ... ``` block. No conversational filler, greetings, or explanations.\n" +
+                "2. Read the error traceback carefully and fix the specific failing line, parameter, enum, or syntax.\n" +
+                "3. API GUARDS:\n" +
+                "   - Mesh primitives must use `bpy.ops.mesh.primitive_..._add` (never create or raw call without add).\n" +
+                "   - Lights must use `bpy.ops.object.light_add(type=...)` (never `bpy.ops.light.add`).\n" +
+                "   - Texture types in `bpy.data.textures.new(...)` MUST be one of: ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'). Never invent custom enum names.\n" +
+                "   - Modifiers must use valid Blender types: 'SUBSURF', 'BEVEL', 'BOOLEAN', 'SOLIDIFY', 'ARRAY', 'MIRROR', etc.\n" +
+                "   - Ensure `bpy.ops.export_scene.gltf` or `bpy.ops.wm.save_as_mainfile` runs at the very end as designed.\n" +
+                "4. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
+    }
+
+    private String buildBlenderRepairUserPrompt(String userPrompt, String failedScript, String errorTraceback) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== WHAT WAS BEING BUILT (USER PROMPT) ===\n")
+          .append(userPrompt != null ? userPrompt : "Generate 3D Scene")
+          .append("\n\n")
+          .append("=== EXACT BLENDER TERMINAL ERROR / TRACEBACK (FROM error.txt) ===\n")
+          .append(errorTraceback != null ? errorTraceback : "Unknown execution failure")
+          .append("\n\n")
+          .append("=== THE FAULTY SCRIPT THAT FAILED ===\n")
+          .append(failedScript != null ? failedScript : "# No script content");
+        return sb.toString();
+    }
+
+    private String cleanAndValidateScript(String rawResponse) {
+        if (rawResponse == null || rawResponse.trim().isEmpty()) {
+            return "";
+        }
+
+        String cleaned = rawResponse.trim();
+
+        // Strip Markdown code block markers if present
+        if (cleaned.startsWith("```python")) {
+            cleaned = cleaned.substring("```python".length());
+        } else if (cleaned.startsWith("```")) {
+            cleaned = cleaned.substring(3);
+        }
+
+        if (cleaned.endsWith("```")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 3);
+        }
+
+        cleaned = cleaned.trim();
+
+        // Safety verification: must contain Python Blender code
+        if (!cleaned.contains("import bpy") && !cleaned.contains("bpy.")) {
+            // If the raw response was wrapped inside helper text, extract by first occurrence of import bpy
+            int idx = cleaned.indexOf("import bpy");
+            if (idx >= 0) {
+                cleaned = cleaned.substring(idx).trim();
+            }
+        }
+
+        return cleaned;
+    }
+
+    /**
+     * Consults Gemini AI for a local repair plan, falling back to local deterministic repairs if offline.
      */
     private boolean executeIntelligenceDrivenRepair(ValidationResult vr) {
         if (vr == null || vr.getMessage() == null || toolExecutor == null) {
@@ -130,7 +225,7 @@ public class AICorrector {
                 try {
                     JSONObject opObj = new JSONObject(jsonResult);
                     String toolId = opObj.optString("toolId", null);
-                    
+
                     if (toolId != null && !toolId.trim().isEmpty()) {
                         ToolOperation repairOp = new ToolOperation(toolId);
                         JSONObject paramsObj = opObj.optJSONObject("parameters");
@@ -163,8 +258,12 @@ public class AICorrector {
         });
 
         try {
-            latch.await(5, TimeUnit.SECONDS);
+            boolean ok = latch.await(5, TimeUnit.SECONDS);
+            if (!ok) {
+                return executeLocalDeterministicRepair(vr);
+            }
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return executeLocalDeterministicRepair(vr);
         }
 
