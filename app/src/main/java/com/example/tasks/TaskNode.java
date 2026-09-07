@@ -7,7 +7,7 @@ import java.util.List;
 
 public class TaskNode {
     /**
-     * Phase 12 Alignment: Complete execution status states including ROLLED_BACK.
+     * Complete execution status states including RETRYING and ROLLED_BACK.
      */
     public enum Status { QUEUED, WAITING, RUNNING, COMPLETED, FAILED, RETRYING, SKIPPED, ROLLED_BACK }
 
@@ -21,6 +21,12 @@ public class TaskNode {
     private String errorMessage;
     private long startTimeMs = 0L;
     private long endTimeMs = 0L;
+
+    // Solution B: AI Self-Correction state tracking
+    private int retryCount = 0;
+    private int maxRetries = 2; // Default 2 attempts (Run 1 -> Repair -> Run 2)
+    private String lastTraceback;
+    private String repairedScript;
 
     public TaskNode(String id, String title, String description, ToolOperation operation) {
         this.id = id;
@@ -42,10 +48,30 @@ public class TaskNode {
     public long getStartTimeMs() { return startTimeMs; }
     public long getEndTimeMs() { return endTimeMs; }
 
+    public int getRetryCount() { return retryCount; }
+    public int getMaxRetries() { return maxRetries; }
+    public String getLastTraceback() { return lastTraceback; }
+    public String getRepairedScript() { return repairedScript; }
+
     public void setTitle(String title) { this.title = title; }
     public void setDescription(String description) { this.description = description; }
     public void setOperation(ToolOperation operation) { this.operation = operation; }
-    
+    public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+    public void setLastTraceback(String lastTraceback) { this.lastTraceback = lastTraceback; }
+    public void setRepairedScript(String repairedScript) { this.repairedScript = repairedScript; }
+
+    public boolean canRetry() {
+        return retryCount < maxRetries;
+    }
+
+    public void incrementRetryCount() {
+        this.retryCount++;
+    }
+
+    public void resetRetryCount() {
+        this.retryCount = 0;
+    }
+
     public void setStatus(Status status) { 
         this.status = status; 
         if (status == Status.RUNNING && startTimeMs == 0L) {
@@ -82,6 +108,10 @@ public class TaskNode {
         copy.setProgressPercent(this.progressPercent);
         copy.setErrorMessage(this.errorMessage);
         copy.dependencyTaskIds.addAll(this.dependencyTaskIds);
+        copy.retryCount = this.retryCount;
+        copy.maxRetries = this.maxRetries;
+        copy.lastTraceback = this.lastTraceback;
+        copy.repairedScript = this.repairedScript;
         return copy;
     }
 }
