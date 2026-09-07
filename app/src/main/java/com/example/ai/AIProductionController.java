@@ -37,6 +37,12 @@ public class AIProductionController {
     private final ExecutionEngine executionEngine;
     private final AIOrchestrator orchestrator;
 
+    // Solution B: AI Script Corrector subsystem
+    private final AICorrector aiCorrector;
+
+    private static final int MAX_REPAIR_ATTEMPTS = 2;
+    private int currentCorrectionAttempt = 1;
+
     private ProductionPlan currentPlan;
 
     public AIProductionController(Context context) {
@@ -56,6 +62,9 @@ public class AIProductionController {
         this.toolExecutor = runtime.getToolExecutor();
         this.executionEngine = runtime.getExecutionEngine();
         this.orchestrator = new AIOrchestrator(apiClient, apiKeyManager, knowledgeManager);
+
+        // Solution B: Bind AICorrector to the active scene and orchestrator
+        this.aiCorrector = new AICorrector(this.toolExecutor, this.orchestrator, this.threeDEngine.getScene());
     }
 
     public ProductionPlan generatePlan(String userPrompt, String style, String engine) {
@@ -139,6 +148,58 @@ public class AIProductionController {
     }
 
     /**
+     * SOLUTION B: Self-Correction Pipeline Trigger
+     * Intercepts execution failures from GitHub Actions runner, requests single-turn Python script repair
+     * from Gemini with the terminal traceback, and logs status before re-dispatching Attempt 2.
+     */
+    public void repairBlenderScript(String userPrompt,
+                                    String failedScript,
+                                    String errorTraceback,
+                                    final GeminiApiClient.ApiCallback<String> callback) {
+        if (aiCorrector == null) {
+            if (callback != null) callback.onError("AICorrector subsystem is not initialized.");
+            return;
+        }
+
+        if (currentCorrectionAttempt > MAX_REPAIR_ATTEMPTS) {
+            String msg = "AI Self-Correction exceeded maximum attempts (" + MAX_REPAIR_ATTEMPTS + ").";
+            VynaraLogger.e("AIProductionController: " + msg);
+            if (callback != null) callback.onError(msg);
+            return;
+        }
+
+        VynaraLogger.system("AIProductionController: Initiating AI Self-Correction (Attempt " + currentCorrectionAttempt + "/" + MAX_REPAIR_ATTEMPTS + ")...");
+
+        aiCorrector.correctBlenderScript(userPrompt, failedScript, errorTraceback, new GeminiApiClient.ApiCallback<String>() {
+            @Override
+            public void onSuccess(String repairedScript) {
+                currentCorrectionAttempt++;
+                // Exact mandatory in-app console log for Solution B
+                VynaraLogger.system("[SYSTEM] AI Self-Correction: Repaired script. Re-dispatching build...");
+                if (callback != null) {
+                    callback.onSuccess(repairedScript);
+                }
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                VynaraLogger.e("AIProductionController: AI Self-Correction repair failed: " + errorMessage);
+                if (callback != null) {
+                    callback.onError(errorMessage);
+                }
+            }
+        });
+    }
+
+    public int getCurrentCorrectionAttempt() {
+        return currentCorrectionAttempt;
+    }
+
+    public void resetCorrectionAttempts() {
+        this.currentCorrectionAttempt = 1;
+    }
+
+    /**
      * Resolves content:// URIs from the Android system photo picker into local cache files,
      * ensuring Gemini Vision can read the actual image bytes.
      */
@@ -194,4 +255,5 @@ public class AIProductionController {
     public ExecutionEngine getExecutionEngine() { return executionEngine; }
     public AIOrchestrator getOrchestrator() { return orchestrator; }
     public ProductionPlan getCurrentPlan() { return currentPlan; }
+    public AICorrector getAiCorrector() { return aiCorrector; }
 }
