@@ -30,6 +30,7 @@ import com.example.tasks.TaskNode;
 import com.example.tools.ToolExecutor;
 import com.example.utils.VynaraLogger;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -108,9 +109,10 @@ public class ProductionFragment extends Fragment {
         // Wire Solution B Failure Interceptor to ExecutionEngine
         setupSelfCorrectionInterceptor();
 
-        // Set UI to loading state while asynchronously requesting dynamic tool-planning layout from Gemini
+        // Set UI loading state
         progressBar.setIndeterminate(true);
-        tvStatus.setText("AI: Devising 3D production plan with Gemini...");
+        boolean isCustomScript = prompt != null && prompt.startsWith("Custom Script:");
+        tvStatus.setText(isCustomScript ? "Packaging custom Python script for execution..." : "AI: Devising 3D production plan with Gemini...");
 
         controller.generatePlanWithGemini(prompt, style, targetEngine, referenceImageUris, new GeminiApiClient.ApiCallback<ProductionPlan>() {
             @Override
@@ -176,6 +178,7 @@ public class ProductionFragment extends Fragment {
 
     /**
      * SOLUTION B: Configures the autonomous AI self-correction interceptor on the execution engine.
+     * Operates seamlessly for both prompt-driven builds and custom uploaded .py scripts.
      */
     private void setupSelfCorrectionInterceptor() {
         ExecutionEngine engine = controller.getExecutionEngine();
@@ -187,7 +190,7 @@ public class ProductionFragment extends Fragment {
                 return false;
             }
 
-            // Retrieve the failure traceback captured from error.txt / blender_execution.log
+            // Retrieve failure traceback from error.txt or task log
             String traceback = GitHubWorkflowBridge.getLastBlenderTraceback();
             if (traceback == null || traceback.trim().isEmpty()) {
                 traceback = GitHubWorkflowBridge.getLastBlenderError();
@@ -196,8 +199,13 @@ public class ProductionFragment extends Fragment {
                 traceback = task.getErrorMessage();
             }
 
-            // Retrieve the faulty Python script that was dispatched
+            // Retrieve the faulty Python script (from task param, repaired buffer, or worker agent)
             String failedScript = task.getRepairedScript();
+            if (failedScript == null || failedScript.trim().isEmpty()) {
+                if (task.getOperation() != null && task.getOperation().getParam("bpyScript") != null) {
+                    failedScript = String.valueOf(task.getOperation().getParam("bpyScript"));
+                }
+            }
             if (failedScript == null || failedScript.trim().isEmpty()) {
                 failedScript = BlenderWorkerAgent.getLastMasterScript();
             }
@@ -209,8 +217,12 @@ public class ProductionFragment extends Fragment {
 
             handler.post(() -> tvStatus.setText("AI Self-Correction: Repairing Blender script..."));
 
-            // Request single-turn repair from Gemini synchronously on this worker thread
-            String repairedScript = controller.getAiCorrector().correctBlenderScriptSync(prompt, failedScript, traceback);
+            // Safe repair prompt handling (supports prompt-free script execution)
+            String repairPrompt = (prompt != null && !prompt.trim().isEmpty())
+                    ? prompt
+                    : "Custom Blender Python script (Prompt omitted). Fix all runtime and syntax errors.";
+
+            String repairedScript = controller.getAiCorrector().correctBlenderScriptSync(repairPrompt, failedScript, traceback);
 
             if (repairedScript == null || repairedScript.trim().isEmpty()) {
                 VynaraLogger.e("ProductionFragment: Gemini could not resolve script traceback.");
@@ -228,12 +240,12 @@ public class ProductionFragment extends Fragment {
 
             handler.post(() -> tvStatus.setText("AI Self-Correction: Re-dispatching build (Attempt 2)..."));
 
-            // Update the task operation's script parameter directly
+            // Update task operation with repaired script
             if (task.getOperation() != null) {
                 task.getOperation().setParam("bpyScript", repairedScript);
             }
 
-            // Re-execute the tool operation for Attempt 2
+            // Re-execute tool operation for Attempt 2
             ToolExecutor executor = controller.getToolExecutor() != null 
                     ? controller.getToolExecutor() 
                     : controller.getRuntime().getToolExecutor();
@@ -262,7 +274,6 @@ public class ProductionFragment extends Fragment {
         controller.executeCurrentPlan(new ExecutionEngine.ExecutionCallback() {
             @Override
             public void onTaskUpdated(TaskNode node, TaskGraph graph) {
-                // Post updates to the Main thread safely
                 handler.post(() -> {
                     if (node != null) {
                         if (node.getStatus() == TaskNode.Status.RETRYING) {
