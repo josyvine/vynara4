@@ -23,15 +23,18 @@ public class GeminiApiClient {
     private static final String BASE_URL = "https://generativelanguage.googleapis.com/v1beta/";
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
+    // Master-Level Blender Procedural System Prompt
     private static final String BLENDER_SYSTEM_INSTRUCTION =
-            "You are an expert 3D modeling and rigging engineer using Blender's Python API (`bpy`).\n" +
-            "When given a creation prompt, generate ONLY executable, production-grade Python code for Blender.\n" +
-            "Requirements:\n" +
-            "1. Start with `import bpy, math, sys, os`.\n" +
-            "2. Always clear existing objects: `bpy.ops.object.select_all(action='SELECT')` and `bpy.ops.object.delete()`.\n" +
-            "3. Generate requested geometry, modifiers (subdivision, bevel, boolean, mirror), materials (Principled BSDF), and armatures.\n" +
-            "4. Ensure output directory exists and export to standard GLB: `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)`.\n" +
-            "5. Output ONLY raw Python code without extra conversational commentary.";
+            "You are an elite 3D modeling and visual development engineer using Blender's Python API (`bpy`).\n" +
+            "When given a creation prompt or reference image, generate ONLY executable, production-grade Python code for Blender.\n\n" +
+            "CORE DIRECTIVES:\n" +
+            "1. Start with `import bpy, math, sys, os, random`.\n" +
+            "2. Always clear existing objects: `bpy.ops.object.select_all(action='SELECT')` and `bpy.ops.object.delete(use_global=False)`.\n" +
+            "3. SURFACE QUALITY: Enable smooth shading (`bpy.ops.object.shade_smooth()`) on all curved/organic/vehicle surfaces. Add a BEVEL modifier (width=0.04, segments=3) on hard edges to capture specular highlights.\n" +
+            "4. AUTOMOTIVE & WHEEL TRANSFORMS: Any wheel cylinder placed on a horizontal axle MUST be rotated 90 degrees on the X or Y axis (`rotation=(0, math.radians(90), 0)` or `(math.radians(90), 0, 0)`). Never leave wheels standing vertically on Z.\n" +
+            "5. PBR MATERIALS: Use Blender 4.2+ Principled BSDF socket names (`Transmission Weight`, `Roughness`, `Metallic`). Create distinct materials for hero paint, tinted glass, tire rubber, and metal trim.\n" +
+            "6. EXPORT: Ensure `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)` runs at root level.\n" +
+            "7. Output ONLY executable Python code inside a single ```python code block without extra commentary.";
 
     // Solution B: Targeted single-turn repair instruction for fixing terminal tracebacks
     private static final String BLENDER_REPAIR_SYSTEM_INSTRUCTION =
@@ -45,6 +48,19 @@ public class GeminiApiClient {
             "1. Analyze the exact traceback line number and error message (e.g., enum mismatch, invalid operator, syntax error).\n" +
             "2. Fix the error while strictly preserving all geometry, lighting, materials, and GLB export commands from the prompt.\n" +
             "3. Output ONLY executable Python code inside a single ```python code block. Do NOT include explanations, conversational filler, or commentary.";
+
+    // Visual Inspection & Viewport Critique Instruction (Claude MCP Style)
+    private static final String BLENDER_VISUAL_CRITIQUE_INSTRUCTION =
+            "You are a Senior 3D Lighting & Art Director inspecting a rendered Blender scene against an intended reference goal.\n" +
+            "You are provided:\n" +
+            "1. The original user prompt / concept\n" +
+            "2. The rendered viewport preview image (`render.png`) produced by Blender Cycles\n" +
+            "3. Optional visual reference photo\n" +
+            "4. The current Blender Python script\n\n" +
+            "CRITIQUE & REFINEMENT OBJECTIVE:\n" +
+            "- Visually inspect the rendered image. Look for defects such as flat un-beveled boxes, incorrect wheel rotations, harsh flat lighting, or floating objects.\n" +
+            "- Rewrite the Blender Python script to resolve these visual defects, adding bevels, correct rotations, PBR shader nodes, and balanced lighting.\n" +
+            "- Output ONLY the complete, corrected Python script inside a single ```python block.";
 
     private final OkHttpClient client;
     private final Handler mainHandler;
@@ -200,8 +216,7 @@ public class GeminiApiClient {
     }
 
     /**
-     * SOLUTION B: Dedicated Single-Turn Script Repair Call
-     * Submits the user prompt, faulty script, and exact error traceback to Gemini with deterministic low temperature.
+     * SOLUTION B: Dedicated Single-Turn Script Repair Call (Syntax / Traceback)
      */
     public void repairBlenderScript(String apiKey,
                                     String modelId,
@@ -220,6 +235,68 @@ public class GeminiApiClient {
                 .append(failedScript != null ? failedScript : "");
 
         generateContentInternal(apiKey, modelId, BLENDER_REPAIR_SYSTEM_INSTRUCTION, repairPrompt.toString(), null, false, 0.15f, new ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                String cleaned = cleanPythonOutput(result);
+                callback.onSuccess(cleaned);
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                callback.onError(errorMessage);
+            }
+        });
+    }
+
+    /**
+     * MULTIMODAL VISUAL FEEDBACK: Evaluates the rendered Cycles preview snapshot (`render.png`)
+     * against the reference goal to visually diagnose and refine the 3D scene.
+     */
+    public void critiqueAndRefineRender(String apiKey,
+                                        String modelId,
+                                        String userPrompt,
+                                        String currentScript,
+                                        String base64ReferenceImage,
+                                        String base64RenderPreview,
+                                        final ApiCallback<String> callback) {
+        List<String> images = new ArrayList<>();
+        if (base64ReferenceImage != null && !base64ReferenceImage.isEmpty()) {
+            images.add(base64ReferenceImage);
+        }
+        if (base64RenderPreview != null && !base64RenderPreview.isEmpty()) {
+            images.add(base64RenderPreview);
+        }
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("=== ORIGINAL USER GOAL ===\n").append(userPrompt).append("\n\n");
+        prompt.append("=== CURRENT SCRIPT EXECUTED ===\n").append(currentScript).append("\n\n");
+        prompt.append("IMAGE INPUTS: Image 1 is the reference goal (if provided). Image 2 is the actual render produced by Blender.\n");
+        prompt.append("TASK: Analyze the render visual defects (lack of bevels, wrong wheel rotation, flat color). Return the complete polished Blender script inside ```python.");
+
+        generateContentInternal(apiKey, modelId, BLENDER_VISUAL_CRITIQUE_INSTRUCTION, prompt.toString(), images, false, 0.2f, new ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                String cleaned = cleanPythonOutput(result);
+                callback.onSuccess(cleaned);
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                callback.onError(errorMessage);
+            }
+        });
+    }
+
+    /**
+     * Synthesizes code for an individual specialized worker (W1, W2, W3, W4).
+     */
+    public void generateWorkerScript(String apiKey,
+                                     String modelId,
+                                     int workerIndex,
+                                     String workerPrompt,
+                                     List<String> base64Images,
+                                     final ApiCallback<String> callback) {
+        generateContentInternal(apiKey, modelId, BLENDER_SYSTEM_INSTRUCTION, workerPrompt, base64Images, false, 0.25f, new ApiCallback<String>() {
             @Override
             public void onSuccess(String result) {
                 String cleaned = cleanPythonOutput(result);
