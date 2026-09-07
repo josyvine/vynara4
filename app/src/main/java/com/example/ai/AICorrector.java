@@ -1,5 +1,9 @@
 package com.example.ai;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.util.Base64;
+
 import com.example.engine.Scene;
 import com.example.tools.ToolExecutor;
 import com.example.tools.ToolOperation;
@@ -8,6 +12,8 @@ import com.example.validation.ValidationResult;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -20,6 +26,10 @@ public class AICorrector {
     private final Scene activeScene;
 
     private static final int SCRIPT_REPAIR_TIMEOUT_SECONDS = 35;
+
+    public AICorrector(ToolExecutor toolExecutor, AIOrchestrator aiOrchestrator) {
+        this(toolExecutor, aiOrchestrator, null);
+    }
 
     public AICorrector(ToolExecutor toolExecutor, AIOrchestrator aiOrchestrator, Scene activeScene) {
         this.toolExecutor = toolExecutor;
@@ -142,6 +152,91 @@ public class AICorrector {
         return repairedScriptRef.get();
     }
 
+    /**
+     * VISUAL CRITIQUE & REFINEMENT (Async)
+     * Compares the Cycles preview render against the reference photo using Gemini Vision to spot and fix
+     * aesthetic defects (boxiness, wheel alignment, bad lighting).
+     */
+    public void critiqueAndRefineBlenderScript(String userPrompt,
+                                              String currentScript,
+                                              File referenceImageFile,
+                                              File renderPreviewFile,
+                                              final GeminiApiClient.ApiCallback<String> callback) {
+        if (aiOrchestrator == null || aiOrchestrator.getApiKeyManager() == null || !aiOrchestrator.getApiKeyManager().hasApiKey()) {
+            if (callback != null) callback.onError("Cannot critique scene: Gemini API key missing.");
+            return;
+        }
+
+        String b64Ref = encodeImageFileToBase64(referenceImageFile);
+        String b64Render = encodeImageFileToBase64(renderPreviewFile);
+
+        VynaraLogger.system("AICorrector: Dispatching multimodal visual critique to Gemini Vision...");
+
+        aiOrchestrator.getApiClient().critiqueAndRefineRender(
+                aiOrchestrator.getApiKeyManager().getApiKey(),
+                aiOrchestrator.getApiKeyManager().getSelectedModel(),
+                userPrompt,
+                currentScript,
+                b64Ref,
+                b64Render,
+                new GeminiApiClient.ApiCallback<String>() {
+                    @Override
+                    public void onSuccess(String result) {
+                        String cleaned = cleanAndValidateScript(result);
+                        if (cleaned.isEmpty()) {
+                            if (callback != null) callback.onError("Gemini returned empty refined script.");
+                        } else {
+                            VynaraLogger.system("AICorrector: Visual critique successfully refined Python script (" + cleaned.length() + " chars).");
+                            if (callback != null) callback.onSuccess(cleaned);
+                        }
+                    }
+
+                    @Override
+                    public void onError(String errorMessage) {
+                        VynaraLogger.e("AICorrector: Visual refinement failed: " + errorMessage);
+                        if (callback != null) callback.onError(errorMessage);
+                    }
+                }
+        );
+    }
+
+    /**
+     * VISUAL CRITIQUE & REFINEMENT (Sync / Blocking)
+     */
+    public String critiqueAndRefineBlenderScriptSync(String userPrompt,
+                                                    String currentScript,
+                                                    File referenceImageFile,
+                                                    File renderPreviewFile) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> refinedScriptRef = new AtomicReference<>(null);
+
+        critiqueAndRefineBlenderScript(userPrompt, currentScript, referenceImageFile, renderPreviewFile, new GeminiApiClient.ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                refinedScriptRef.set(result);
+                latch.countDown();
+            }
+
+            @Override
+            public void onError(String error) {
+                VynaraLogger.e("AICorrector (Sync): Visual critique error: " + error);
+                latch.countDown();
+            }
+        });
+
+        try {
+            boolean completed = latch.await(SCRIPT_REPAIR_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!completed) {
+                VynaraLogger.e("AICorrector (Sync): Visual critique timed out after " + SCRIPT_REPAIR_TIMEOUT_SECONDS + "s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            VynaraLogger.e("AICorrector (Sync): Interrupted: " + e.getMessage());
+        }
+
+        return refinedScriptRef.get();
+    }
+
     private String buildBlenderRepairSystemInstruction() {
         return "You are an elite Blender Python (`bpy`) core engineer and debugger specializing in automated 3D asset generation.\n" +
                 "A cloud worker running headless Blender failed with a runtime exception/traceback while executing a generated script.\n" +
@@ -178,7 +273,6 @@ public class AICorrector {
 
         String cleaned = rawResponse.trim();
 
-        // Strip Markdown code block markers if present
         if (cleaned.startsWith("```python")) {
             cleaned = cleaned.substring("```python".length());
         } else if (cleaned.startsWith("```")) {
@@ -191,9 +285,7 @@ public class AICorrector {
 
         cleaned = cleaned.trim();
 
-        // Safety verification: must contain Python Blender code
         if (!cleaned.contains("import bpy") && !cleaned.contains("bpy.")) {
-            // If the raw response was wrapped inside helper text, extract by first occurrence of import bpy
             int idx = cleaned.indexOf("import bpy");
             if (idx >= 0) {
                 cleaned = cleaned.substring(idx).trim();
@@ -201,6 +293,36 @@ public class AICorrector {
         }
 
         return cleaned;
+    }
+
+    private String encodeImageFileToBase64(File file) {
+        if (file == null || !file.exists() || file.length() == 0) return null;
+        try {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+
+            int maxDim = Math.max(options.outWidth, options.outHeight);
+            int inSampleSize = 1;
+            while (maxDim / inSampleSize > 1024) {
+                inSampleSize *= 2;
+            }
+
+            options.inJustDecodeBounds = false;
+            options.inSampleSize = inSampleSize;
+            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+            if (bitmap == null) return null;
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos);
+            byte[] bytes = baos.toByteArray();
+            bitmap.recycle();
+
+            return Base64.encodeToString(bytes, Base64.NO_WRAP);
+        } catch (Exception e) {
+            VynaraLogger.e("AICorrector: Failed to encode image to base64: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -215,7 +337,7 @@ public class AICorrector {
             return executeLocalDeterministicRepair(vr);
         }
 
-        String sceneContextJson = AIContext.buildSceneContextJson(activeScene);
+        String sceneContextJson = activeScene != null ? AIContext.buildSceneContextJson(activeScene) : "{}";
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicBoolean repairSuccess = new AtomicBoolean(false);
 
