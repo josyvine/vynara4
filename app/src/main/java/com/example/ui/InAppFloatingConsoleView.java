@@ -187,15 +187,20 @@ public class InAppFloatingConsoleView extends FrameLayout implements VynaraLogge
         String msg = entry.getMessage();
         String lowerMsg = msg.toLowerCase();
 
-        // High-Alert Red Highlighting: Any line containing error, exception, or traceback turns red
-        boolean isError = entry.getLevel() == VynaraLogger.LogLevel.ERROR
+        // Solution B: Distinguish positive self-correction events from raw failures
+        boolean isSelfCorrection = entry.getTag() == VynaraLogger.LogTag.SELF_CORRECTION
+                || lowerMsg.contains("self-correction")
+                || lowerMsg.contains("repaired script");
+
+        // High-Alert Red Highlighting: Any real error/exception/traceback turns red
+        boolean isError = !isSelfCorrection && (entry.getLevel() == VynaraLogger.LogLevel.ERROR
                 || lowerMsg.contains("error")
                 || lowerMsg.contains("exception")
                 || lowerMsg.contains("traceback")
                 || lowerMsg.contains("failed")
-                || lowerMsg.contains("syntaxerror");
+                || lowerMsg.contains("syntaxerror"));
 
-        String hexColor = isError ? "#FF5252" : getHexColorForLog(entry);
+        String hexColor = isError ? "#FF5252" : (isSelfCorrection ? "#00E5FF" : getHexColorForLog(entry));
         String prefix = entry.getFormattedTime() + " " + (entry.getTag() != null ? entry.getTag().name() : "LOG");
         String htmlLine = "<font color=\"" + hexColor + "\"><b>" + prefix + "</b>: " + msg + "</font><br/>";
 
@@ -227,7 +232,8 @@ public class InAppFloatingConsoleView extends FrameLayout implements VynaraLogge
             case GEMINI:
                 return "#E040FB"; // Deep Fuchsia/Magenta
             case AI:
-                return "#00E5FF"; // Electric Cyan
+            case SELF_CORRECTION:
+                return "#00E5FF"; // Electric Cyan / Healing Turquoise
             case KNOWLEDGE:
                 return "#7C4DFF"; // Indigo
             case TOOL_MANIFEST:
