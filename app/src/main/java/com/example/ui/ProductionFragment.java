@@ -27,6 +27,7 @@ import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
 import com.example.tasks.TaskGraph;
 import com.example.tasks.TaskNode;
+import com.example.tools.ToolExecutor;
 import com.example.utils.VynaraLogger;
 
 import java.util.ArrayList;
@@ -101,7 +102,7 @@ public class ProductionFragment extends Fragment {
         adapter = new TaskNodeAdapter();
         rvTasks.setAdapter(adapter);
 
-        // Phase 1 Alignment: Initialize Controller bound to shared ProjectRuntime
+        // Initialize Controller bound to shared ProjectRuntime
         controller = new AIProductionController(requireContext());
 
         // Wire Solution B Failure Interceptor to ExecutionEngine
@@ -227,13 +228,17 @@ public class ProductionFragment extends Fragment {
 
             handler.post(() -> tvStatus.setText("AI Self-Correction: Re-dispatching build (Attempt 2)..."));
 
-            // Update the task operation's script parameter if present
-            if (task.getOperation() != null && task.getOperation().hasParam("bpyScript")) {
+            // Update the task operation's script parameter directly
+            if (task.getOperation() != null) {
                 task.getOperation().setParam("bpyScript", repairedScript);
             }
 
             // Re-execute the tool operation for Attempt 2
-            boolean retrySuccess = controller.getToolExecutor() != null && controller.getToolExecutor().executeOperation(task.getOperation());
+            ToolExecutor executor = controller.getToolExecutor() != null 
+                    ? controller.getToolExecutor() 
+                    : controller.getRuntime().getToolExecutor();
+
+            boolean retrySuccess = executor != null && executor.executeOperation(task.getOperation());
 
             if (retrySuccess) {
                 VynaraLogger.system("ProductionFragment: Run 2 succeeded! 3D model built with 0 errors.");
