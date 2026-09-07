@@ -12,7 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class VynaraLogger {
 
     public enum LogTag {
-        SYSTEM, GEMINI, AI, KNOWLEDGE, TOOL_MANIFEST, VALIDATOR, MAPPER, TASK, EXECUTION, GENERATOR, MATERIAL, VALIDATION, CLOUD, BLENDER
+        SYSTEM, GEMINI, AI, KNOWLEDGE, TOOL_MANIFEST, VALIDATOR, MAPPER, TASK, EXECUTION, GENERATOR, MATERIAL, VALIDATION, CLOUD, BLENDER, SELF_CORRECTION
     }
 
     public enum LogLevel {
@@ -85,6 +85,17 @@ public class VynaraLogger {
     public static void blender(String msg) { log(LogTag.BLENDER, LogLevel.INFO, msg); }
     public static void blender(LogLevel level, String msg) { log(LogTag.BLENDER, level, msg); }
     public static void blenderError(String msg) { log(LogTag.BLENDER, LogLevel.ERROR, msg); }
+
+    // SOLUTION B: AI Self-Correction Logging
+    public static void selfCorrection(String msg) { log(LogTag.SELF_CORRECTION, LogLevel.INFO, msg); }
+    public static void selfCorrection(LogLevel level, String msg) { log(LogTag.SELF_CORRECTION, level, msg); }
+    
+    /**
+     * Mandatory Solution B status emission for real-time floating console view
+     */
+    public static void logSelfCorrectionRepair() {
+        system("[SYSTEM] AI Self-Correction: Repaired script. Re-dispatching build...");
+    }
 
     // General purpose warning & error logging methods
     public static void w(String msg) {
