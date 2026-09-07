@@ -202,8 +202,11 @@ public class ProductionFragment extends Fragment {
             // Retrieve the faulty Python script (from task param, repaired buffer, or worker agent)
             String failedScript = task.getRepairedScript();
             if (failedScript == null || failedScript.trim().isEmpty()) {
-                if (task.getOperation() != null && task.getOperation().getParam("bpyScript") != null) {
-                    failedScript = String.valueOf(task.getOperation().getParam("bpyScript"));
+                if (task.getOperation() != null) {
+                    Object scriptObj = task.getOperation().getParam("bpyScript", null);
+                    if (scriptObj != null) {
+                        failedScript = String.valueOf(scriptObj);
+                    }
                 }
             }
             if (failedScript == null || failedScript.trim().isEmpty()) {
