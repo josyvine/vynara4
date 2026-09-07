@@ -21,10 +21,13 @@ import com.example.MainActivity;
 import com.example.R;
 import com.example.ai.AIProductionController;
 import com.example.ai.GeminiApiClient;
+import com.example.ai.agents.BlenderWorkerAgent;
+import com.example.cloud.GitHubWorkflowBridge;
 import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
 import com.example.tasks.TaskGraph;
 import com.example.tasks.TaskNode;
+import com.example.utils.VynaraLogger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -101,6 +104,9 @@ public class ProductionFragment extends Fragment {
         // Phase 1 Alignment: Initialize Controller bound to shared ProjectRuntime
         controller = new AIProductionController(requireContext());
 
+        // Wire Solution B Failure Interceptor to ExecutionEngine
+        setupSelfCorrectionInterceptor();
+
         // Set UI to loading state while asynchronously requesting dynamic tool-planning layout from Gemini
         progressBar.setIndeterminate(true);
         tvStatus.setText("AI: Devising 3D production plan with Gemini...");
@@ -168,8 +174,79 @@ public class ProductionFragment extends Fragment {
     }
 
     /**
-     * Phase 12 & 21 Alignment: Executes the true background-threaded tool execution 
-     * pipeline on the shared runtime instead of mock timer updates.
+     * SOLUTION B: Configures the autonomous AI self-correction interceptor on the execution engine.
+     */
+    private void setupSelfCorrectionInterceptor() {
+        ExecutionEngine engine = controller.getExecutionEngine();
+        if (engine == null) return;
+
+        engine.setTaskFailureInterceptor((task, graph) -> {
+            if (!task.canRetry()) {
+                VynaraLogger.e("ProductionFragment: Task [" + task.getId() + "] exceeded max self-correction retries.");
+                return false;
+            }
+
+            // Retrieve the failure traceback captured from error.txt / blender_execution.log
+            String traceback = GitHubWorkflowBridge.getLastBlenderTraceback();
+            if (traceback == null || traceback.trim().isEmpty()) {
+                traceback = GitHubWorkflowBridge.getLastBlenderError();
+            }
+            if (traceback == null || traceback.trim().isEmpty()) {
+                traceback = task.getErrorMessage();
+            }
+
+            // Retrieve the faulty Python script that was dispatched
+            String failedScript = task.getRepairedScript();
+            if (failedScript == null || failedScript.trim().isEmpty()) {
+                failedScript = BlenderWorkerAgent.getLastMasterScript();
+            }
+
+            if (traceback == null || failedScript == null || failedScript.trim().isEmpty()) {
+                VynaraLogger.e("ProductionFragment: Self-correction missing script or traceback context. Cannot repair.");
+                return false;
+            }
+
+            handler.post(() -> tvStatus.setText("AI Self-Correction: Repairing Blender script..."));
+
+            // Request single-turn repair from Gemini synchronously on this worker thread
+            String repairedScript = controller.getAiCorrector().correctBlenderScriptSync(prompt, failedScript, traceback);
+
+            if (repairedScript == null || repairedScript.trim().isEmpty()) {
+                VynaraLogger.e("ProductionFragment: Gemini could not resolve script traceback.");
+                return false;
+            }
+
+            // Record repair state and increment attempt
+            task.incrementRetryCount();
+            task.setRepairedScript(repairedScript);
+            task.setLastTraceback(traceback);
+            task.setStatus(TaskNode.Status.RETRYING);
+
+            // Mandatory System Console Log for Solution B
+            VynaraLogger.logSelfCorrectionRepair();
+
+            handler.post(() -> tvStatus.setText("AI Self-Correction: Re-dispatching build (Attempt 2)..."));
+
+            // Update the task operation's script parameter if present
+            if (task.getOperation() != null && task.getOperation().hasParam("bpyScript")) {
+                task.getOperation().setParam("bpyScript", repairedScript);
+            }
+
+            // Re-execute the tool operation for Attempt 2
+            boolean retrySuccess = controller.getToolExecutor() != null && controller.getToolExecutor().executeOperation(task.getOperation());
+
+            if (retrySuccess) {
+                VynaraLogger.system("ProductionFragment: Run 2 succeeded! 3D model built with 0 errors.");
+                return true;
+            } else {
+                VynaraLogger.e("ProductionFragment: Attempt 2 build failed after repair.");
+                return false;
+            }
+        });
+    }
+
+    /**
+     * Executes the background tool execution pipeline on the shared runtime.
      */
     private void startRealExecutionPipeline() {
         if (activePlan == null || activePlan.getTaskGraph() == null) {
@@ -183,7 +260,11 @@ public class ProductionFragment extends Fragment {
                 // Post updates to the Main thread safely
                 handler.post(() -> {
                     if (node != null) {
-                        tvStatus.setText("Executing: " + node.getTitle());
+                        if (node.getStatus() == TaskNode.Status.RETRYING) {
+                            tvStatus.setText("AI Self-Correction: Repaired script. Re-dispatching build...");
+                        } else {
+                            tvStatus.setText("Executing: " + node.getTitle());
+                        }
                         adapter.setTasks(graph.getAllNodes());
                     }
                     int completed = graph.getCompletedCount();
