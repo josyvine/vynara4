@@ -13,10 +13,8 @@ import com.example.knowledge.KnowledgeManager;
 import com.example.runtime.ProjectRuntime;
 import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
-import com.example.tasks.TaskGraph;
 import com.example.tasks.TaskNode;
 import com.example.tools.ToolExecutor;
-import com.example.tools.ToolOperation;
 import com.example.tools.ToolRegistry;
 import com.example.utils.VynaraLogger;
 import com.example.validation.ValidationManager;
@@ -87,15 +85,15 @@ public class AIProductionController {
 
         List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
 
-        // Check if a custom Python script was attached
+        currentPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
+
+        // If custom script attached, inject it into the generated task graph
         String customScriptPath = findCustomScriptPath(resolvedUris);
-        if (customScriptPath != null) {
-            VynaraLogger.system("AIProductionController: Custom Python script detected. Bypassing AI generation.");
-            currentPlan = buildCustomScriptPlan(customScriptPath, userPrompt, engine);
-            return currentPlan;
+        if (customScriptPath != null && currentPlan != null && currentPlan.getTaskGraph() != null) {
+            String scriptText = readScriptContent(customScriptPath);
+            injectCustomScriptIntoPlan(currentPlan, scriptText);
         }
 
-        currentPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
         return currentPlan;
     }
 
@@ -116,8 +114,12 @@ public class AIProductionController {
         // Direct Custom Script Execution: Bypasses Gemini planning if a .py script is attached
         String customScriptPath = findCustomScriptPath(resolvedUris);
         if (customScriptPath != null) {
-            VynaraLogger.system("AIProductionController: Custom Python script detected [" + customScriptPath + "]. Direct execution engaged.");
-            ProductionPlan scriptPlan = buildCustomScriptPlan(customScriptPath, userPrompt, engine);
+            VynaraLogger.system("AIProductionController: Custom Python script detected [" + customScriptPath + "]. Bypassing Gemini planning.");
+            ProductionPlan scriptPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
+            if (scriptPlan != null && scriptPlan.getTaskGraph() != null) {
+                String scriptText = readScriptContent(customScriptPath);
+                injectCustomScriptIntoPlan(scriptPlan, scriptText);
+            }
             this.currentPlan = scriptPlan;
             callback.onSuccess(scriptPlan);
             return;
@@ -247,37 +249,14 @@ public class AIProductionController {
         return aiCorrector.critiqueAndRefineBlenderScriptSync(userPrompt, currentScript, referenceImageFile, renderPreviewFile);
     }
 
-    /**
-     * Builds an immediate execution plan for an uploaded Python script, bypassing LLM prompt generation.
-     */
-    private ProductionPlan buildCustomScriptPlan(String scriptPath, String prompt, String engine) {
-        String scriptText = readScriptContent(scriptPath);
-        String assetId = "asset_script_" + System.currentTimeMillis();
-        String title = (prompt != null && !prompt.trim().isEmpty()) ? prompt : "Custom Script Build";
-
-        TaskGraph graph = new TaskGraph();
-
-        // Step 1: Clear canvas
-        ToolOperation clearOp = new ToolOperation("scene.clear");
-        TaskNode task1 = new TaskNode("task_1", "Clearing Canvas", "Resetting active scene", clearOp);
-        graph.addNode(task1);
-
-        // Step 2: Direct cloud generation using user script
-        ToolOperation generateOp = new ToolOperation("blender.cloud_generate")
-                .setParam("assetId", assetId)
-                .setParam("prompt", title)
-                .setParam("bpyScript", scriptText);
-        TaskNode task2 = new TaskNode("task_2", "blender.cloud_generate", "Executing custom Blender Python script", generateOp);
-        task2.addDependency("task_1");
-        graph.addNode(task2);
-
-        // Step 3: Mesh inspection
-        ToolOperation checkOp = new ToolOperation("validation.check_mesh");
-        TaskNode task3 = new TaskNode("task_3", "Inspecting Mesh & Scene Integrity", "Validating exported geometry", checkOp);
-        task3.addDependency("task_2");
-        graph.addNode(task3);
-
-        return new ProductionPlan(title, "Custom Script", engine, graph);
+    private void injectCustomScriptIntoPlan(ProductionPlan plan, String scriptText) {
+        if (plan == null || plan.getTaskGraph() == null || scriptText == null || scriptText.isEmpty()) return;
+        for (TaskNode node : plan.getTaskGraph().getAllNodes()) {
+            if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
+                node.getOperation().setParam("bpyScript", scriptText);
+                VynaraLogger.system("AIProductionController: Injected custom Python script into task [" + node.getId() + "]");
+            }
+        }
     }
 
     private String findCustomScriptPath(List<String> uris) {
