@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class AIDirectorSpec {
-    // Provenance Tracking (Zero Guesswork)
+    // Provenance Tracking
     private boolean isLiveAiGenerated = false;
     private String generationSource = "UNINITIALIZED";
 
@@ -15,6 +15,27 @@ public class AIDirectorSpec {
     private String sceneType = "environment";
     private String mood = "misty_dawn";
     private String visualStyleNotes = "Dynamic procedural 3D scene.";
+    private String objectCategory = "general";
+
+    // Dynamic 4-Worker Layer Contracts
+    private String w1StructureSpec = "";
+    private String w2DetailsSpec = "";
+    private String w3MaterialsSpec = "";
+    private String w4CinematicsSpec = "";
+
+    // Structural & Edge Modeling Standards
+    private float bevelWidth = 0.05f;
+    private int bevelSegments = 3;
+    private boolean smoothShading = true;
+
+    // Automotive & Sub-part Transformation Standards
+    private float[] wheelRotationEuler = new float[] { 90.0f, 0.0f, 0.0f }; // 90 deg X-axis alignment
+
+    // PBR Material Contract (Blender 4.2+ Principled BSDF)
+    private float metallic = 0.25f;
+    private float roughness = 0.35f;
+    private float transmissionWeight = 0.0f;
+    private float clearcoat = 0.0f;
 
     // Camera Contract
     private float focalLengthMm = 50.0f;
@@ -59,6 +80,16 @@ public class AIDirectorSpec {
         spec.sceneType = json.optString("sceneType", spec.sceneType);
         spec.mood = json.optString("mood", spec.mood);
         spec.visualStyleNotes = json.optString("visualStyleNotes", spec.visualStyleNotes);
+        spec.objectCategory = json.optString("objectCategory", spec.objectCategory);
+
+        // Parse Dynamic 4-Worker Layer Specs
+        JSONObject workersObj = json.optJSONObject("workers");
+        if (workersObj != null) {
+            spec.w1StructureSpec = workersObj.optString("w1_structure", "");
+            spec.w2DetailsSpec = workersObj.optString("w2_details", "");
+            spec.w3MaterialsSpec = workersObj.optString("w3_materials", "");
+            spec.w4CinematicsSpec = workersObj.optString("w4_cinematics", "");
+        }
 
         // Parse Camera
         JSONObject camObj = json.optJSONObject("camera");
@@ -93,12 +124,15 @@ public class AIDirectorSpec {
             spec.ambientColorHex = lightObj.optString("ambientColorHex", spec.ambientColorHex);
         }
 
-        // Parse Palette
+        // Parse Palette & Surface Properties
         JSONObject palObj = json.optJSONObject("palette");
         if (palObj != null) {
             spec.primaryColorHex = palObj.optString("primaryColorHex", spec.primaryColorHex);
             spec.secondaryColorHex = palObj.optString("secondaryColorHex", spec.secondaryColorHex);
             spec.accentColorHex = palObj.optString("accentColorHex", spec.accentColorHex);
+            spec.metallic = (float) palObj.optDouble("metallic", spec.metallic);
+            spec.roughness = (float) palObj.optDouble("roughness", spec.roughness);
+            spec.transmissionWeight = (float) palObj.optDouble("transmissionWeight", spec.transmissionWeight);
         }
 
         // Parse Seeds
@@ -119,6 +153,14 @@ public class AIDirectorSpec {
             root.put("sceneType", sceneType);
             root.put("mood", mood);
             root.put("visualStyleNotes", visualStyleNotes);
+            root.put("objectCategory", objectCategory);
+
+            JSONObject workersObj = new JSONObject();
+            workersObj.put("w1_structure", w1StructureSpec);
+            workersObj.put("w2_details", w2DetailsSpec);
+            workersObj.put("w3_materials", w3MaterialsSpec);
+            workersObj.put("w4_cinematics", w4CinematicsSpec);
+            root.put("workers", workersObj);
 
             JSONObject camObj = new JSONObject();
             camObj.put("focalLengthMm", focalLengthMm);
@@ -145,6 +187,9 @@ public class AIDirectorSpec {
             palObj.put("primaryColorHex", primaryColorHex);
             palObj.put("secondaryColorHex", secondaryColorHex);
             palObj.put("accentColorHex", accentColorHex);
+            palObj.put("metallic", metallic);
+            palObj.put("roughness", roughness);
+            palObj.put("transmissionWeight", transmissionWeight);
             root.put("palette", palObj);
 
             JSONObject seedsObj = new JSONObject();
@@ -192,6 +237,110 @@ public class AIDirectorSpec {
 
     public void setVisualStyleNotes(String visualStyleNotes) { 
         this.visualStyleNotes = visualStyleNotes; 
+    }
+
+    public String getObjectCategory() {
+        return objectCategory;
+    }
+
+    public void setObjectCategory(String objectCategory) {
+        this.objectCategory = objectCategory;
+    }
+
+    public String getW1StructureSpec() {
+        return w1StructureSpec;
+    }
+
+    public void setW1StructureSpec(String w1StructureSpec) {
+        this.w1StructureSpec = w1StructureSpec;
+    }
+
+    public String getW2DetailsSpec() {
+        return w2DetailsSpec;
+    }
+
+    public void setW2DetailsSpec(String w2DetailsSpec) {
+        this.w2DetailsSpec = w2DetailsSpec;
+    }
+
+    public String getW3MaterialsSpec() {
+        return w3MaterialsSpec;
+    }
+
+    public void setW3MaterialsSpec(String w3MaterialsSpec) {
+        this.w3MaterialsSpec = w3MaterialsSpec;
+    }
+
+    public String getW4CinematicsSpec() {
+        return w4CinematicsSpec;
+    }
+
+    public void setW4CinematicsSpec(String w4CinematicsSpec) {
+        this.w4CinematicsSpec = w4CinematicsSpec;
+    }
+
+    public float getBevelWidth() {
+        return bevelWidth;
+    }
+
+    public void setBevelWidth(float bevelWidth) {
+        this.bevelWidth = bevelWidth;
+    }
+
+    public int getBevelSegments() {
+        return bevelSegments;
+    }
+
+    public void setBevelSegments(int bevelSegments) {
+        this.bevelSegments = bevelSegments;
+    }
+
+    public boolean isSmoothShading() {
+        return smoothShading;
+    }
+
+    public void setSmoothShading(boolean smoothShading) {
+        this.smoothShading = smoothShading;
+    }
+
+    public float[] getWheelRotationEuler() {
+        return wheelRotationEuler;
+    }
+
+    public void setWheelRotationEuler(float x, float y, float z) {
+        this.wheelRotationEuler = new float[] { x, y, z };
+    }
+
+    public float getMetallic() {
+        return metallic;
+    }
+
+    public void setMetallic(float metallic) {
+        this.metallic = metallic;
+    }
+
+    public float getRoughness() {
+        return roughness;
+    }
+
+    public void setRoughness(float roughness) {
+        this.roughness = roughness;
+    }
+
+    public float getTransmissionWeight() {
+        return transmissionWeight;
+    }
+
+    public void setTransmissionWeight(float transmissionWeight) {
+        this.transmissionWeight = transmissionWeight;
+    }
+
+    public float getClearcoat() {
+        return clearcoat;
+    }
+
+    public void setClearcoat(float clearcoat) {
+        this.clearcoat = clearcoat;
     }
 
     public float getFocalLengthMm() { 
