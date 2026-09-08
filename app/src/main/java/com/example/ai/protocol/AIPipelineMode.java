@@ -116,6 +116,19 @@ public enum AIPipelineMode implements Serializable {
     public long getExpectedTimeoutMs() { return expectedTimeoutMs; }
     public long getMaxTimeoutMs() { return maxTimeoutMs; }
 
+    // --- PIPELINE CLASSIFICATION HELPERS ---
+    public boolean isProcedural() {
+        return this == PROCEDURAL_PYTHON;
+    }
+
+    public boolean isAgentic() {
+        return this == AGENTIC_AUTONOMOUS || this == AGENTIC_INTERACTIVE;
+    }
+
+    public boolean isNeural() {
+        return this == NEURAL_IMAGE_TO_3D;
+    }
+
     /**
      * Strictly verifies whether this pipeline mode's prerequisites are met.
      * Emits real-time validation logs directly to Vynara's in-app console.
