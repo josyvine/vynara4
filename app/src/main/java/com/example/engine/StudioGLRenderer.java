@@ -267,15 +267,20 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
             for (SceneObject obj : flatList) {
                 if (obj.getMesh() == null || !obj.isVisible()) continue;
                 
-                float[] modelMatrix = obj.getTransform().getWorldMatrix(null);
+                // Recursively calculate global world matrix following parent-child hierarchy
+                float[] modelMatrix = getAbsoluteWorldMatrix(obj);
                 boolean isTranslucent = obj.getMaterial() != null && obj.getMaterial().getOpacity() < 1.0f;
                 
                 RenderTask task = new RenderTask(obj, modelMatrix);
                 if (isTranslucent) {
-                    float dx = obj.getTransform().getPx() - cameraEye[0];
-                    float dy = obj.getTransform().getPy() - cameraEye[1];
-                    float dz = obj.getTransform().getPz() - cameraEye[2];
-                    task.distanceToCamera = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    // Extract absolute world coordinates from the calculated model matrix for precise depth sorting
+                    float worldX = modelMatrix[12];
+                    float worldY = modelMatrix[13];
+                    float worldZ = modelMatrix[14];
+                    float dx = worldX - cameraEye[0];
+                    float dy = worldY - cameraEye[1];
+                    float dz = worldZ - cameraEye[2];
+                    task.distanceToCamera = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
                     translucentTasks.add(task);
                 } else {
                     opaqueTasks.add(task);
@@ -296,6 +301,14 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
             }
             GLES20.glDepthMask(true);
         }
+    }
+
+    // Recursively computes the absolute world matrix using the node's parent hierarchy
+    private float[] getAbsoluteWorldMatrix(SceneObject obj) {
+        if (obj == null) return null;
+        SceneObject parent = obj.getParent();
+        float[] parentWorld = (parent != null) ? getAbsoluteWorldMatrix(parent) : null;
+        return obj.getTransform().getWorldMatrix(parentWorld);
     }
 
     private void drawGrid(float[] viewMatrix, float[] projMatrix) {
