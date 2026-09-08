@@ -28,10 +28,10 @@ jobs:
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
       # Step 3: Install Virtual Display Server for OpenGL Desktop Parity
-      - name: Install Headless Display Server (Xvfb & Mesa)
+      - name: Install Headless Display Server (Xvfb)
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libegl1-mesa libgl1-mesa-dri
+          sudo apt-get install -y xvfb
 
       # Step 4: Execute Blender Python Script with Auto-Repair & Production Cycles Snapshot
       - name: Execute Blender Python Script
