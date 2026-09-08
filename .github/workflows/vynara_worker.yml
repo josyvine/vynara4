@@ -27,7 +27,13 @@ jobs:
           sudo mkdir -p /opt/blender
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
-      # Step 3: Execute Blender Python Script with Auto-Repair & Fast Cycles Snapshot
+      # Step 3: Install Virtual Display Server for OpenGL Desktop Parity
+      - name: Install Headless Display Server (Xvfb & Mesa)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libegl1-mesa libgl1-mesa-dri
+
+      # Step 4: Execute Blender Python Script with Auto-Repair & Production Cycles Snapshot
       - name: Execute Blender Python Script
         env:
           BPY_SCRIPT: ${{ github.event.client_payload.bpy_script }}
@@ -145,22 +151,22 @@ jobs:
               return prefix + tex_val + suffix
           bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", fix_texture_type, bpy_script)
 
-          # Auto-Repair 7: Ensure standard GLTF/GLB export exists
+          # Auto-Repair 7: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
               bpy_script += (
-                  "\n\n# Standard Model Exporter\n"
+                  "\n\n# Standard Model Exporter with Baked Modifiers\n"
                   "import bpy, os\n"
                   "os.makedirs('output', exist_ok=True)\n"
                   "try:\n"
-                  "    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)\n"
+                  "    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n"
                   "    print('3D GLTF Export Successful: output/model.glb')\n"
                   "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
               )
 
-          # Auto-Repair 8: High-speed progressive Cycles snapshot (16 samples, ~30 seconds)
+          # Auto-Repair 8: Production Denoised Cycles Snapshot (128 samples with OpenImageDenoise)
           if 'output/render.png' not in bpy_script:
               bpy_script += (
-                  "\n\n# High-Speed Viewport Snapshot for Visual Inspection\n"
+                  "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
                   "try:\n"
                   "    if not os.path.exists('output/render.png'):\n"
                   "        if not bpy.context.scene.camera:\n"
@@ -168,12 +174,13 @@ jobs:
                   "            bpy.context.scene.camera = bpy.context.active_object\n"
                   "        bpy.context.scene.render.engine = 'CYCLES'\n"
                   "        bpy.context.scene.cycles.device = 'CPU'\n"
-                  "        bpy.context.scene.cycles.samples = 16\n"
-                  "        bpy.context.scene.render.resolution_x = 1024\n"
-                  "        bpy.context.scene.render.resolution_y = 768\n"
+                  "        bpy.context.scene.cycles.samples = 128\n"
+                  "        bpy.context.scene.cycles.use_denoising = True\n"
+                  "        bpy.context.scene.render.resolution_x = 1280\n"
+                  "        bpy.context.scene.render.resolution_y = 720\n"
                   "        bpy.context.scene.render.filepath = 'output/render.png'\n"
                   "        bpy.ops.render.render(write_still=True)\n"
-                  "        print('Cycles snapshot complete: output/render.png')\n"
+                  "        print('Production Cycles snapshot complete: output/render.png')\n"
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
               )
 
@@ -188,8 +195,8 @@ jobs:
 
           EOF
 
-          # Run headless Blender and capture output
-          /opt/blender/blender -b -P run_task.py 2>&1 | tee output/blender_execution.log || true
+          # Run headless Blender wrapped inside virtual X display buffer for full OpenGL shader compilation
+          xvfb-run -a --server-args="-screen 0 1920x1080x24 -ac +extension GLX +render" /opt/blender/blender -b -P run_task.py 2>&1 | tee output/blender_execution.log || true
 
           # Extract clean Python traceback for Solution B if any exception occurred
           python3 - << 'EOF'
@@ -218,7 +225,7 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Upload both GLB model, Cycles render, and execution logs (Runs even if build failed)
+      # Step 5: Upload both GLB model, Cycles render, and execution logs (Runs even if build failed)
       - name: Upload Finished Model and Render Preview
         if: always()
         uses: actions/upload-artifact@v4
