@@ -2,6 +2,7 @@ package com.example.tools;
 
 import com.example.ai.ApiKeyManager;
 import com.example.ai.GeminiApiClient;
+import com.example.ai.protocol.AIPipelineMode;
 import com.example.asset.AssetManager;
 import com.example.character.Character;
 import com.example.character.CharacterManager;
@@ -40,17 +41,10 @@ public class ToolExecutor {
         this.validationManager = validationManager;
     }
 
-    /**
-     * Overloaded execution method resolving direct caller invocations
-     * from dialogs and controllers without altering existing engine logic.
-     */
     public boolean execute(ToolOperation op, ProjectRuntime runtime) {
         return executeOperation(op);
     }
 
-    /**
-     * Overloaded execution method alias for executeOperation.
-     */
     public boolean execute(ToolOperation op) {
         return executeOperation(op);
     }
@@ -307,16 +301,112 @@ public class ToolExecutor {
                 return true;
             }
 
+            // =================================================================
+            // PIPELINE OPTION C: NEURAL IMAGE-TO-3D RECONSTRUCTION
+            // =================================================================
+            case "neural.image_to_3d":
+            case "image.to_3d_neural": {
+                String imagePath = op.getStringParam("imagePath", null);
+                String assetId = op.getStringParam("assetId", "neural_" + System.currentTimeMillis());
+
+                VynaraLogger.system("Executing neural.image_to_3d: assetId=" + assetId);
+
+                if (imagePath == null || imagePath.trim().isEmpty()) {
+                    VynaraLogger.e("neural.image_to_3d FAILED: No input reference image provided.");
+                    return false;
+                }
+
+                File imageFile = new File(imagePath);
+                if (!imageFile.exists() || imageFile.length() <= 0) {
+                    VynaraLogger.e("neural.image_to_3d FAILED: Reference image file does not exist at " + imagePath);
+                    return false;
+                }
+
+                ApiKeyManager keyManager = ProjectRuntime.getInstance().getAIOrchestrator().getApiKeyManager();
+                String spaceUrl = keyManager.getHuggingFaceSpaceUrl();
+                String token = keyManager.getHuggingFaceToken();
+
+                File modelsDir = new File(ProjectRuntime.getInstance().getContext().getFilesDir(), "models_cache");
+                if (!modelsDir.exists()) modelsDir.mkdirs();
+
+                File outputGlb = new File(modelsDir, assetId + ".glb");
+                HuggingFaceBridge hfBridge = new HuggingFaceBridge();
+
+                final CountDownLatch latch = new CountDownLatch(1);
+                final AtomicBoolean success = new AtomicBoolean(false);
+
+                VynaraLogger.system("neural.image_to_3d: Dispatching image [" + imageFile.getName() + "] to neural reconstruction endpoint...");
+
+                hfBridge.generateImageTo3D(spaceUrl, token, imageFile, outputGlb, new HuggingFaceBridge.GenerationCallback() {
+                    @Override
+                    public void onProgress(int percentage, long bytesRead, long totalBytes) {
+                        VynaraLogger.ai("Neural Mesh Synthesis: " + percentage + "% (" + bytesRead + "/" + totalBytes + " bytes)");
+                    }
+
+                    @Override
+                    public void onSuccess(File downloadedGlbFile) {
+                        try {
+                            VynaraLogger.system("neural.image_to_3d: Importing synthesized 3D mesh into active scene viewport...");
+                            GLTFImporter.ImportResult result = GLTFImporter.loadFromFile(downloadedGlbFile);
+                            for (SceneObject obj : result.getSceneObjects()) {
+                                engine.getSceneManager().getActiveScene().addObject(obj);
+                            }
+                            for (Character ch : result.getCharacters()) {
+                                characterManager.registerCharacter(ch);
+                                if (ch.getSceneObject() != null) {
+                                    engine.getSceneManager().getActiveScene().addObject(ch.getSceneObject());
+                                }
+                            }
+                            engine.getSceneManager().updateWorldTransforms();
+                            autoFrameCameraOnScene();
+                            VynaraLogger.system("neural.image_to_3d: Mesh imported successfully. Output ready.");
+                            success.set(true);
+                        } catch (Exception ex) {
+                            VynaraLogger.e("Failed importing neural GLB into scene: " + ex.getMessage(), ex);
+                        } finally {
+                            latch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void onError(String errorMessage) {
+                        VynaraLogger.e("neural.image_to_3d generation failed: " + errorMessage);
+                        latch.countDown();
+                    }
+                });
+
+                try {
+                    latch.await(180, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {}
+
+                return success.get();
+            }
+
+            // =================================================================
+            // PIPELINES OPTION A, B1 & B2: CLUSTERED BLENDER GENERATOR
+            // =================================================================
             case "blender.generate":
-            case "blender.cloud_generate": {
+            case "blender.cloud_generate":
+            case "blender.agentic_autonomous":
+            case "blender.agentic_interactive": {
                 String prompt = op.getStringParam("prompt", "3D asset");
                 String bpyScript = op.getStringParam("bpyScript", "");
                 if (bpyScript.isEmpty()) {
                     bpyScript = op.getStringParam("compositeMasterScript", "");
                 }
                 String assetId = op.getStringParam("assetId", "asset_" + System.currentTimeMillis());
+                String pipelineModeStr = op.getStringParam("pipelineMode", AIPipelineMode.PROCEDURAL_PYTHON.getId());
+                AIPipelineMode activeMode = AIPipelineMode.fromDisplayNameSafe(pipelineModeStr);
 
-                VynaraLogger.system("Executing blender.cloud_generate: assetId=" + assetId + ", prompt=" + prompt);
+                // Resolve GitHub dispatch event type deterministically based on tool ID & mode
+                String eventType = activeMode.getGithubEventType();
+                if ("blender.agentic_autonomous".equals(id)) {
+                    eventType = "vynara_agentic_auto";
+                } else if ("blender.agentic_interactive".equals(id)) {
+                    eventType = "vynara_agentic_interactive";
+                }
+
+                VynaraLogger.system("Executing " + id + " [Mode: " + activeMode.getDisplayName() + ", Event: " + eventType + "]");
 
                 ApiKeyManager keyManager = ProjectRuntime.getInstance().getAIOrchestrator().getApiKeyManager();
                 CloudProvider provider = keyManager.getComputeProvider();
@@ -336,7 +426,7 @@ public class ToolExecutor {
                 }
 
                 if (pat.isEmpty()) {
-                    VynaraLogger.e("blender.cloud_generate FAILED: No GitHub token available. Please sign in via Settings.");
+                    VynaraLogger.e(id + " FAILED: No GitHub token configured. Please sign in via Settings.");
                     return false;
                 }
 
@@ -348,7 +438,7 @@ public class ToolExecutor {
                     modelsDir.mkdirs();
                 }
 
-                int maxAiAttempts = 2;
+                int maxAiAttempts = activeMode.isAgentic() ? 1 : 2;
                 String currentBpyScript = bpyScript;
                 String currentAssetId = assetId;
                 boolean finalSuccess = false;
@@ -401,20 +491,21 @@ public class ToolExecutor {
                         });
                     } else {
                         GitHubWorkflowBridge ghBridge = new GitHubWorkflowBridge();
-                        VynaraLogger.system("GitHubWorkflowBridge: Triggering workflow dispatch for " + targetRepo + " (Attempt " + currentAttempt + "/" + maxAiAttempts + ")");
+                        VynaraLogger.system("GitHubWorkflowBridge: Triggering " + eventType + " for " + targetRepo + " (Attempt " + currentAttempt + "/" + maxAiAttempts + ")");
                         
                         final String dispatchAssetId = currentAssetId;
                         final String dispatchScript = currentBpyScript;
+                        final String finalEventType = eventType;
 
-                        ghBridge.dispatchGenerationWorkflow(targetRepo, targetPat, "vynara_generate", dispatchAssetId, dispatchScript, new GitHubWorkflowBridge.WorkflowDispatchCallback() {
+                        ghBridge.dispatchGenerationWorkflow(targetRepo, targetPat, finalEventType, dispatchAssetId, dispatchScript, new GitHubWorkflowBridge.WorkflowDispatchCallback() {
                             @Override
-                            public void onDispatched(String eventType, String aId) {
-                                VynaraLogger.system("GitHub generation workflow dispatched successfully to " + targetRepo + ". Monitoring run progress...");
+                            public void onDispatched(String eType, String aId) {
+                                VynaraLogger.system("Workflow [" + finalEventType + "] dispatched successfully. Awaiting worker artifacts...");
                                 
                                 ghBridge.awaitWorkflowAndDownloadArtifact(targetRepo, targetPat, dispatchAssetId, outputGlb, new GitHubWorkflowBridge.WorkflowPollingCallback() {
                                     @Override
                                     public void onStatusUpdate(String status, String details) {
-                                        VynaraLogger.system("GitHub Action Execution: " + details);
+                                        VynaraLogger.system("GitHub Action: " + details);
                                     }
 
                                     @Override
@@ -432,7 +523,6 @@ public class ToolExecutor {
                                             }
                                             for (Character ch : result.getCharacters()) {
                                                 characterManager.registerCharacter(ch);
-                                                // Attach rigged character mesh to active scene viewport so it renders immediately
                                                 if (ch.getSceneObject() != null) {
                                                     engine.getSceneManager().getActiveScene().addObject(ch.getSceneObject());
                                                 }
@@ -442,7 +532,7 @@ public class ToolExecutor {
 
                                             File renderImg = GitHubWorkflowBridge.getAssociatedRenderImage(downloadedGlbFile);
                                             if (renderImg != null) {
-                                                VynaraLogger.system("ToolExecutor: Photorealistic Cycles preview render verified at " + renderImg.getName());
+                                                VynaraLogger.system("ToolExecutor: Cycles snapshot verified at " + renderImg.getName());
                                             }
 
                                             attemptSuccess.set(true);
@@ -472,7 +562,8 @@ public class ToolExecutor {
                     }
 
                     try {
-                        latch.await(300, TimeUnit.SECONDS);
+                        long waitTimeout = activeMode.getMaxTimeoutMs() / 1000;
+                        latch.await(waitTimeout > 0 ? waitTimeout : 300, TimeUnit.SECONDS);
                     } catch (InterruptedException ignored) {}
 
                     if (attemptSuccess.get()) {
@@ -480,9 +571,9 @@ public class ToolExecutor {
                         break;
                     }
 
-                    // SOLUTION B: AI Self-Correction Loop for Attempt 2
+                    // Self-correction loop only applies to single-pass procedural runs
                     String failureReason = failureMessageHolder.toString();
-                    if (attempt < maxAiAttempts && keyManager.hasApiKey() && !failureReason.isEmpty()) {
+                    if (attempt < maxAiAttempts && keyManager.hasApiKey() && !failureReason.isEmpty() && activeMode.isProcedural()) {
                         VynaraLogger.system("ToolExecutor: Intercepted Blender runtime failure [" + failureReason + "]. Engaging AI Self-Correction Loop...");
                         
                         final CountDownLatch repairLatch = new CountDownLatch(1);
@@ -496,8 +587,8 @@ public class ToolExecutor {
                                 "1. Output ONLY executable Python code inside ```python. No commentary.\n" +
                                 "2. Ensure all mesh operators use `bpy.ops.mesh.primitive_...` (never `_create` or `bpy.ops.object.mesh.`).\n" +
                                 "3. Ensure all lighting operators use `bpy.ops.object.light_add` (never `bpy.ops.light.add`).\n" +
-                                "4. In `bpy.data.textures.new(name, type=...)`, type MUST be one of ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'). Never invent unlisted types like 'STORM'.\n" +
-                                "5. Preserve all original multi-part 3D geometry and materials from the user's prompt.";
+                                "4. In `bpy.data.textures.new(name, type=...)`, type MUST be one of ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'). Never invent unlisted types.\n" +
+                                "5. Preserve all original multi-part 3D geometry and materials.";
 
                         String repairPrompt = "USER PROMPT: " + prompt + "\n\n" +
                                 "EXACT BLENDER TERMINAL ERROR / TRACEBACK:\n" + failureReason + "\n\n" +
