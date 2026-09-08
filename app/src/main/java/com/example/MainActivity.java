@@ -36,6 +36,9 @@ public class MainActivity extends AppCompatActivity {
     private ProjectRuntime projectRuntime;
     private GitHubOAuthService gitHubOAuthService;
 
+    // Retains active production state across bottom-nav tab switches
+    private ProductionFragment activeProductionFragment = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -54,7 +57,13 @@ public class MainActivity extends AppCompatActivity {
         bottomNavigationView.setOnItemSelectedListener(item -> {
             int id = item.getItemId();
             if (id == R.id.nav_create) {
-                loadFragment(new CreateFragment());
+                // If a 3D model generation is currently running, restore the live progress screen
+                if (activeProductionFragment != null && isProductionRunning()) {
+                    VynaraLogger.system("MainActivity: Restoring in-progress production monitor...");
+                    loadFragment(activeProductionFragment);
+                } else {
+                    loadFragment(new CreateFragment());
+                }
                 return true;
             } else if (id == R.id.nav_projects) {
                 loadFragment(new ProjectsFragment());
@@ -198,7 +207,23 @@ public class MainActivity extends AppCompatActivity {
     public void startProduction(String prompt, String style, String targetEngine, String pipelineModeId, List<String> referenceImageUris) {
         AIPipelineMode resolvedMode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
         VynaraLogger.system("MainActivity: Routing production to -> " + resolvedMode.getDisplayName() + " [" + resolvedMode.getId() + "]");
-        loadFragment(ProductionFragment.newInstance(prompt, style, targetEngine, resolvedMode.getId(), referenceImageUris));
+        
+        ProductionFragment prodFragment = ProductionFragment.newInstance(prompt, style, targetEngine, resolvedMode.getId(), referenceImageUris);
+        this.activeProductionFragment = prodFragment;
+        loadFragment(prodFragment);
+    }
+
+    /**
+     * Checks whether an AI generation pipeline is actively running in the background.
+     */
+    public boolean isProductionRunning() {
+        return projectRuntime != null 
+                && projectRuntime.getExecutionEngine() != null 
+                && projectRuntime.getExecutionEngine().isRunning();
+    }
+
+    public void clearActiveProduction() {
+        this.activeProductionFragment = null;
     }
 
     public ProjectRuntime getProjectRuntime() {
