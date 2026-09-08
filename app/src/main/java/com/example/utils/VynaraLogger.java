@@ -12,7 +12,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class VynaraLogger {
 
     public enum LogTag {
-        SYSTEM, GEMINI, AI, KNOWLEDGE, TOOL_MANIFEST, VALIDATOR, MAPPER, TASK, EXECUTION, GENERATOR, MATERIAL, VALIDATION, CLOUD, BLENDER, SELF_CORRECTION
+        SYSTEM, GEMINI, AI, KNOWLEDGE, TOOL_MANIFEST, VALIDATOR, MAPPER, 
+        TASK, EXECUTION, GENERATOR, MATERIAL, VALIDATION, CLOUD, BLENDER, 
+        SELF_CORRECTION, PIPELINE, CHECKPOINT, NEURAL
     }
 
     public enum LogLevel {
@@ -47,7 +49,16 @@ public class VynaraLogger {
 
         @Override
         public String toString() {
-            return getFormattedTime() + " " + tag.name() + " " + message;
+            StringBuilder sb = new StringBuilder();
+            sb.append(getFormattedTime())
+              .append(" [").append(tag.name()).append("] ");
+            if (level == LogLevel.ERROR) {
+                sb.append("[ERROR] ");
+            } else if (level == LogLevel.WARNING) {
+                sb.append("[WARN] ");
+            }
+            sb.append(message);
+            return sb.toString();
         }
     }
 
@@ -63,7 +74,7 @@ public class VynaraLogger {
 
     private VynaraLogger() {}
 
-    // Dynamic logging helper methods mapped to your architectural trace requirements
+    // Core architectural logging channels
     public static void system(String msg) { log(LogTag.SYSTEM, LogLevel.INFO, msg); }
     public static void gemini(String msg) { log(LogTag.GEMINI, LogLevel.INFO, msg); }
     public static void ai(String msg) { log(LogTag.AI, LogLevel.INFO, msg); }
@@ -77,9 +88,20 @@ public class VynaraLogger {
     public static void generator(String msg) { log(LogTag.GENERATOR, LogLevel.INFO, msg); }
     public static void material(String msg) { log(LogTag.MATERIAL, LogLevel.INFO, msg); }
     
+    public static void validation(String msg) { log(LogTag.VALIDATION, LogLevel.INFO, msg); }
     public static void validation(LogLevel level, String msg) { log(LogTag.VALIDATION, level, msg); }
     public static void cloud(String msg) { log(LogTag.CLOUD, LogLevel.INFO, msg); }
     public static void cloud(LogLevel level, String msg) { log(LogTag.CLOUD, level, msg); }
+
+    // Multi-pipeline channels (Options A, B1, B2, and C)
+    public static void pipeline(String msg) { log(LogTag.PIPELINE, LogLevel.INFO, msg); }
+    public static void pipeline(LogLevel level, String msg) { log(LogTag.PIPELINE, level, msg); }
+
+    public static void checkpoint(String msg) { log(LogTag.CHECKPOINT, LogLevel.INFO, msg); }
+    public static void checkpoint(LogLevel level, String msg) { log(LogTag.CHECKPOINT, level, msg); }
+
+    public static void neural(String msg) { log(LogTag.NEURAL, LogLevel.INFO, msg); }
+    public static void neural(LogLevel level, String msg) { log(LogTag.NEURAL, level, msg); }
 
     // Dedicated Blender internal worker logging methods
     public static void blender(String msg) { log(LogTag.BLENDER, LogLevel.INFO, msg); }
@@ -90,9 +112,6 @@ public class VynaraLogger {
     public static void selfCorrection(String msg) { log(LogTag.SELF_CORRECTION, LogLevel.INFO, msg); }
     public static void selfCorrection(LogLevel level, String msg) { log(LogTag.SELF_CORRECTION, level, msg); }
     
-    /**
-     * Mandatory Solution B status emission for real-time floating console view
-     */
     public static void logSelfCorrectionRepair() {
         system("[SYSTEM] AI Self-Correction: Repaired script. Re-dispatching build...");
     }
