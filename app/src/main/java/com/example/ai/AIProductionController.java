@@ -16,6 +16,7 @@ import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
 import com.example.tasks.TaskNode;
 import com.example.tools.ToolExecutor;
+import com.example.tools.ToolOperation;
 import com.example.tools.ToolRegistry;
 import com.example.utils.VynaraLogger;
 import com.example.validation.ValidationManager;
@@ -142,7 +143,9 @@ public class AIProductionController {
 
         boolean hasPrompt = (userPrompt != null && !userPrompt.trim().isEmpty());
         boolean hasScript = (customScriptPath != null);
-        boolean hasCloudAuth = apiKeyManager.hasApiKey() || (apiKeyManager.getGitHubToken() != null && !apiKeyManager.getGitHubToken().trim().isEmpty());
+        boolean hasCloudAuth = apiKeyManager.hasApiKey() 
+                || (apiKeyManager.getGitHubPat() != null && !apiKeyManager.getGitHubPat().trim().isEmpty())
+                || apiKeyManager.hasGitHubConfig();
 
         // STRICT PRE-FLIGHT CONTRACT VALIDATION (PREVENTS SILENT DEGRADATION TO FALLBACK)
         AIPipelineMode.ExecutionValidationStatus status = mode.validateExecutionContract(hasPrompt, hasScript, refImageCount, hasCloudAuth);
@@ -162,9 +165,10 @@ public class AIProductionController {
             if (neuralPlan != null && neuralPlan.getTaskGraph() != null) {
                 for (TaskNode node : neuralPlan.getTaskGraph().getAllNodes()) {
                     if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
-                        node.getOperation().setToolId(mode.getToolId()); // "neural.image_to_3d"
-                        node.getOperation().setParam("imagePath", firstRefImg.getAbsolutePath());
-                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        ToolOperation newOp = new ToolOperation(mode.getToolId(), node.getOperation().getParameters());
+                        newOp.setParam("imagePath", firstRefImg.getAbsolutePath());
+                        newOp.setParam("pipelineMode", mode.getId());
+                        node.setOperation(newOp);
                         node.setTitle("Neural 3D Reconstruction");
                         node.setDescription("Synthesizing watertight 3D polygon mesh from reference photo");
                         VynaraLogger.system("AIProductionController: Injected neural 3D task [" + node.getId() + "] referencing " + firstRefImg.getName());
@@ -187,13 +191,14 @@ public class AIProductionController {
             if (interactivePlan != null && interactivePlan.getTaskGraph() != null) {
                 for (TaskNode node : interactivePlan.getTaskGraph().getAllNodes()) {
                     if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
-                        node.getOperation().setToolId(mode.getToolId()); // "blender.agentic_interactive"
-                        node.getOperation().setParam("agenticMode", true);
-                        node.getOperation().setParam("interactiveCheckpoint", true);
-                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        ToolOperation newOp = new ToolOperation(mode.getToolId(), node.getOperation().getParameters());
+                        newOp.setParam("agenticMode", true);
+                        newOp.setParam("interactiveCheckpoint", true);
+                        newOp.setParam("pipelineMode", mode.getId());
                         if (firstRefImg != null) {
-                            node.getOperation().setParam("referenceImagePath", firstRefImg.getAbsolutePath());
+                            newOp.setParam("referenceImagePath", firstRefImg.getAbsolutePath());
                         }
+                        node.setOperation(newOp);
                         node.setTitle("Interactive AI Designer Checkpoint");
                         node.setDescription("Blockout generation with pause for mobile user critique");
                         VynaraLogger.system("AIProductionController: Configured interactive checkpoint task [" + node.getId() + "]");
@@ -221,13 +226,14 @@ public class AIProductionController {
             if (autoPlan != null && autoPlan.getTaskGraph() != null) {
                 for (TaskNode node : autoPlan.getTaskGraph().getAllNodes()) {
                     if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
-                        node.getOperation().setToolId(mode.getToolId()); // "blender.agentic_autonomous"
-                        node.getOperation().setParam("agenticMode", true);
-                        node.getOperation().setParam("interactiveCheckpoint", false);
-                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        ToolOperation newOp = new ToolOperation(mode.getToolId(), node.getOperation().getParameters());
+                        newOp.setParam("agenticMode", true);
+                        newOp.setParam("interactiveCheckpoint", false);
+                        newOp.setParam("pipelineMode", mode.getId());
                         if (firstRefImg != null) {
-                            node.getOperation().setParam("referenceImagePath", firstRefImg.getAbsolutePath());
+                            newOp.setParam("referenceImagePath", firstRefImg.getAbsolutePath());
                         }
+                        node.setOperation(newOp);
                         node.setTitle("Autonomous AI Vision Modeling");
                         node.setDescription("Multi-turn progressive mesh refinement using visual inspection");
                         VynaraLogger.system("AIProductionController: Configured autonomous agent task [" + node.getId() + "]");
