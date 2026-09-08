@@ -5,6 +5,7 @@ import android.net.Uri;
 
 import com.example.ai.agents.DirectorAgent;
 import com.example.ai.protocol.AIDirectorSpec;
+import com.example.ai.protocol.AIPipelineMode;
 import com.example.ai.protocol.AIProductionRequest;
 import com.example.character.CharacterManager;
 import com.example.cloud.CloudProvider;
@@ -75,19 +76,24 @@ public class AIProductionController {
     }
 
     public ProductionPlan generatePlan(String userPrompt, String style, String engine) {
-        return generatePlan(userPrompt, style, engine, new ArrayList<>());
+        return generatePlan(userPrompt, style, engine, AIPipelineMode.PROCEDURAL_PYTHON.getId(), new ArrayList<>());
     }
 
     public ProductionPlan generatePlan(String userPrompt, String style, String engine, List<String> referenceImageUris) {
+        return generatePlan(userPrompt, style, engine, AIPipelineMode.PROCEDURAL_PYTHON.getId(), referenceImageUris);
+    }
+
+    public ProductionPlan generatePlan(String userPrompt, String style, String engine, String pipelineModeId, List<String> referenceImageUris) {
         if (engine != null && (engine.toLowerCase().contains("blender") || engine.toLowerCase().contains("cloud"))) {
             apiKeyManager.saveComputeProvider(CloudProvider.GITHUB_ACTIONS);
         }
 
-        List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
+        AIPipelineMode mode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
+        VynaraLogger.system("AIProductionController: Compiling synchronous plan for -> " + mode.getDisplayName());
 
+        List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
         currentPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
 
-        // If custom script attached, inject it into the generated task graph
         String customScriptPath = findCustomScriptPath(resolvedUris);
         if (customScriptPath != null && currentPlan != null && currentPlan.getTaskGraph() != null) {
             String scriptText = readScriptContent(customScriptPath);
@@ -97,24 +103,153 @@ public class AIProductionController {
         return currentPlan;
     }
 
-    /**
-     * CORE PIPELINE: Asynchronously requests an intelligent, structured 3D production plan.
-     * If a custom .py script is present, immediately bypasses Gemini planning and dispatches the script directly.
-     */
     public void generatePlanWithGemini(String userPrompt, String style, String engine, List<String> referenceImageUris, final GeminiApiClient.ApiCallback<ProductionPlan> callback) {
+        generatePlanWithGemini(userPrompt, style, engine, AIPipelineMode.PROCEDURAL_PYTHON.getId(), referenceImageUris, callback);
+    }
+
+    /**
+     * CORE PIPELINE DISPATCHER: Strictly resolves the requested pipeline mode (Option A, B1, B2, or C).
+     * Validates execution contracts and halts on missing prerequisites instead of silently degrading.
+     */
+    public void generatePlanWithGemini(String userPrompt,
+                                       String style,
+                                       String engine,
+                                       String pipelineModeId,
+                                       List<String> referenceImageUris,
+                                       final GeminiApiClient.ApiCallback<ProductionPlan> callback) {
         if (callback == null) return;
 
-        // Force GitHub Actions compute provider if Blender Native target engine is selected
+        AIPipelineMode mode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
+        VynaraLogger.system("AIProductionController: Validating pipeline contract for [" + mode.getDisplayName() + "]...");
+
         if (engine != null && (engine.toLowerCase().contains("blender") || engine.toLowerCase().contains("cloud"))) {
             apiKeyManager.saveComputeProvider(CloudProvider.GITHUB_ACTIONS);
         }
 
         List<String> resolvedUris = resolveReferenceUris(referenceImageUris);
-
-        // Direct Custom Script Execution: Bypasses Gemini planning if a .py script is attached
         String customScriptPath = findCustomScriptPath(resolvedUris);
+        File firstRefImg = getFirstReferenceImageFile(resolvedUris);
+
+        int refImageCount = 0;
+        if (resolvedUris != null) {
+            for (String u : resolvedUris) {
+                if (u != null && !u.toLowerCase().endsWith(".py")) {
+                    File f = new File(u);
+                    if (f.exists() && f.length() > 0) refImageCount++;
+                }
+            }
+        }
+
+        boolean hasPrompt = (userPrompt != null && !userPrompt.trim().isEmpty());
+        boolean hasScript = (customScriptPath != null);
+        boolean hasCloudAuth = apiKeyManager.hasApiKey() || (apiKeyManager.getGitHubToken() != null && !apiKeyManager.getGitHubToken().trim().isEmpty());
+
+        // STRICT PRE-FLIGHT CONTRACT VALIDATION (PREVENTS SILENT DEGRADATION TO FALLBACK)
+        AIPipelineMode.ExecutionValidationStatus status = mode.validateExecutionContract(hasPrompt, hasScript, refImageCount, hasCloudAuth);
+        if (!status.isValid()) {
+            VynaraLogger.validation(VynaraLogger.LogLevel.ERROR, "AIProductionController: Contract check REJECTED: " + status.getErrorMessage());
+            callback.onError(status.getErrorMessage());
+            return; // STRICT HALT: Stops immediately without generating fallback cubes!
+        }
+
+        // =========================================================================
+        // PIPELINE OPTION C: NEURAL IMAGE-TO-3D RECONSTRUCTION
+        // =========================================================================
+        if (mode.isNeural()) {
+            VynaraLogger.system("AIProductionController: [OPTION C] Directing workflow to Neural Image-to-3D Pipeline...");
+            ProductionPlan neuralPlan = orchestrator.planProduction("Neural 3D: " + userPrompt, style, engine, resolvedUris);
+
+            if (neuralPlan != null && neuralPlan.getTaskGraph() != null) {
+                for (TaskNode node : neuralPlan.getTaskGraph().getAllNodes()) {
+                    if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
+                        node.getOperation().setToolId(mode.getToolId()); // "neural.image_to_3d"
+                        node.getOperation().setParam("imagePath", firstRefImg.getAbsolutePath());
+                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        node.setTitle("Neural 3D Reconstruction");
+                        node.setDescription("Synthesizing watertight 3D polygon mesh from reference photo");
+                        VynaraLogger.system("AIProductionController: Injected neural 3D task [" + node.getId() + "] referencing " + firstRefImg.getName());
+                    }
+                }
+            }
+
+            this.currentPlan = neuralPlan;
+            callback.onSuccess(neuralPlan);
+            return;
+        }
+
+        // =========================================================================
+        // PIPELINE OPTION B2: INTERACTIVE AI DESIGN CHECKPOINTS (HUMAN-IN-THE-LOOP)
+        // =========================================================================
+        if (mode.isInteractive()) {
+            VynaraLogger.system("AIProductionController: [OPTION B2] Initializing Interactive AI Designer Checkpoint Plan...");
+            ProductionPlan interactivePlan = orchestrator.planProduction("Interactive Design: " + userPrompt, style, engine, resolvedUris);
+
+            if (interactivePlan != null && interactivePlan.getTaskGraph() != null) {
+                for (TaskNode node : interactivePlan.getTaskGraph().getAllNodes()) {
+                    if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
+                        node.getOperation().setToolId(mode.getToolId()); // "blender.agentic_interactive"
+                        node.getOperation().setParam("agenticMode", true);
+                        node.getOperation().setParam("interactiveCheckpoint", true);
+                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        if (firstRefImg != null) {
+                            node.getOperation().setParam("referenceImagePath", firstRefImg.getAbsolutePath());
+                        }
+                        node.setTitle("Interactive AI Designer Checkpoint");
+                        node.setDescription("Blockout generation with pause for mobile user critique");
+                        VynaraLogger.system("AIProductionController: Configured interactive checkpoint task [" + node.getId() + "]");
+                    }
+                }
+            }
+
+            if (customScriptPath != null) {
+                String scriptText = readScriptContent(customScriptPath);
+                injectCustomScriptIntoPlan(interactivePlan, scriptText);
+            }
+
+            this.currentPlan = interactivePlan;
+            callback.onSuccess(interactivePlan);
+            return;
+        }
+
+        // =========================================================================
+        // PIPELINE OPTION B1: AUTONOMOUS AI VISION DESIGN LOOP
+        // =========================================================================
+        if (mode.isAgentic()) {
+            VynaraLogger.system("AIProductionController: [OPTION B1] Initializing Autonomous Vision-Feedback Design Plan...");
+            ProductionPlan autoPlan = orchestrator.planProduction("Autonomous Design: " + userPrompt, style, engine, resolvedUris);
+
+            if (autoPlan != null && autoPlan.getTaskGraph() != null) {
+                for (TaskNode node : autoPlan.getTaskGraph().getAllNodes()) {
+                    if (node.getOperation() != null && "blender.cloud_generate".equals(node.getOperation().getToolId())) {
+                        node.getOperation().setToolId(mode.getToolId()); // "blender.agentic_autonomous"
+                        node.getOperation().setParam("agenticMode", true);
+                        node.getOperation().setParam("interactiveCheckpoint", false);
+                        node.getOperation().setParam("pipelineMode", mode.getId());
+                        if (firstRefImg != null) {
+                            node.getOperation().setParam("referenceImagePath", firstRefImg.getAbsolutePath());
+                        }
+                        node.setTitle("Autonomous AI Vision Modeling");
+                        node.setDescription("Multi-turn progressive mesh refinement using visual inspection");
+                        VynaraLogger.system("AIProductionController: Configured autonomous agent task [" + node.getId() + "]");
+                    }
+                }
+            }
+
+            if (customScriptPath != null) {
+                String scriptText = readScriptContent(customScriptPath);
+                injectCustomScriptIntoPlan(autoPlan, scriptText);
+            }
+
+            this.currentPlan = autoPlan;
+            callback.onSuccess(autoPlan);
+            return;
+        }
+
+        // =========================================================================
+        // PIPELINE OPTION A: PROCEDURAL PYTHON SCRIPT (YOUR EXISTING METHOD - UNTOUCHED)
+        // =========================================================================
         if (customScriptPath != null) {
-            VynaraLogger.system("AIProductionController: Custom Python script detected [" + customScriptPath + "]. Bypassing Gemini planning.");
+            VynaraLogger.system("AIProductionController: [OPTION A] Custom Python script detected [" + customScriptPath + "]. Bypassing Gemini planning.");
             ProductionPlan scriptPlan = orchestrator.planProduction(userPrompt, style, engine, resolvedUris);
             if (scriptPlan != null && scriptPlan.getTaskGraph() != null) {
                 String scriptText = readScriptContent(customScriptPath);
@@ -125,6 +260,7 @@ public class AIProductionController {
             return;
         }
 
+        VynaraLogger.system("AIProductionController: [OPTION A] Querying Gemini for procedural 3D production plan...");
         AIProductionRequest request = new AIProductionRequest(userPrompt, style, engine);
         if (resolvedUris != null) {
             for (String uri : resolvedUris) {
@@ -132,7 +268,6 @@ public class AIProductionController {
             }
         }
 
-        // Query the live, registered Gemini model for prompt-driven generation
         orchestrator.planProductionWithGemini(request, new GeminiApiClient.ApiCallback<ProductionPlan>() {
             @Override
             public void onSuccess(ProductionPlan plan) {
@@ -142,6 +277,7 @@ public class AIProductionController {
 
             @Override
             public void onError(String errorMessage) {
+                VynaraLogger.e("AIProductionController: Gemini planning failed: " + errorMessage);
                 callback.onError(errorMessage);
             }
         });
@@ -149,7 +285,6 @@ public class AIProductionController {
 
     public void executeCurrentPlan(ExecutionEngine.ExecutionCallback callback) {
         if (currentPlan != null && currentPlan.getTaskGraph() != null) {
-            // Begin scene transaction for undo/redo rollback capability
             runtime.getTransactionManager().beginTransaction("Execute AI Plan: " + currentPlan.getProjectName());
             
             executionEngine.executeGraph(currentPlan.getTaskGraph(), new ExecutionEngine.ExecutionCallback() {
@@ -160,14 +295,12 @@ public class AIProductionController {
 
                 @Override
                 public void onGraphCompleted(com.example.tasks.TaskGraph graph) {
-                    // Commit transaction upon successful completion
                     runtime.getTransactionManager().commitTransaction();
                     if (callback != null) callback.onGraphCompleted(graph);
                 }
 
                 @Override
                 public void onError(String errorMessage) {
-                    // Rollback scene graph transaction on execution failure
                     runtime.getTransactionManager().rollbackTransaction();
                     if (callback != null) callback.onError(errorMessage);
                 }
@@ -177,10 +310,6 @@ public class AIProductionController {
         }
     }
 
-    /**
-     * SOLUTION B: Self-Correction Pipeline Trigger
-     * Supports prompt-free repair when custom scripts hit unexpected runtime errors.
-     */
     public void repairBlenderScript(String userPrompt,
                                     String failedScript,
                                     String errorTraceback,
@@ -197,7 +326,6 @@ public class AIProductionController {
             return;
         }
 
-        // Safe fallback prompt if user ran in prompt-free script mode
         String safePrompt = (userPrompt != null && !userPrompt.trim().isEmpty())
                 ? userPrompt
                 : "Execute and fix this custom Blender Python script to build a clean 3D scene without syntax or operator errors.";
@@ -208,7 +336,7 @@ public class AIProductionController {
             @Override
             public void onSuccess(String repairedScript) {
                 currentCorrectionAttempt++;
-                VynaraLogger.system("[SYSTEM] AI Self-Correction: Repaired script. Re-dispatching build...");
+                VynaraLogger.system("AI Self-Correction: Repaired script successfully. Re-dispatching build...");
                 if (callback != null) {
                     callback.onSuccess(repairedScript);
                 }
@@ -224,10 +352,6 @@ public class AIProductionController {
         });
     }
 
-    /**
-     * VISUAL REFINEMENT LOOP: Compares the rendered Cycles preview snapshot (render.png)
-     * against the reference goal to visually diagnose and refine the Blender script.
-     */
     public void visuallyCritiqueAndRefine(String userPrompt,
                                           String currentScript,
                                           File referenceImageFile,
@@ -307,9 +431,6 @@ public class AIProductionController {
         this.currentCorrectionAttempt = 1;
     }
 
-    /**
-     * Resolves content:// URIs from the Android system photo picker into local cache files.
-     */
     public List<String> resolveReferenceUris(List<String> uris) {
         List<String> resolved = new ArrayList<>();
         if (uris == null || uris.isEmpty()) return resolved;
