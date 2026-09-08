@@ -27,7 +27,7 @@ import okhttp3.ResponseBody;
 public class HuggingFaceBridge {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     private static final MediaType OCTET_STREAM_MEDIA_TYPE = MediaType.parse("application/octet-stream");
-    private static final int DEFAULT_TIMEOUT_SECONDS = 90;
+    private static final int DEFAULT_TIMEOUT_SECONDS = 180; // 3 minutes for neural reconstruction
 
     private final OkHttpClient httpClient;
     private final Handler mainHandler;
@@ -87,6 +87,91 @@ public class HuggingFaceBridge {
                 } finally {
                     response.close();
                 }
+            }
+        });
+    }
+
+    // =========================================================================
+    // PIPELINE OPTION C: NEURAL IMAGE-TO-3D RECONSTRUCTION
+    // =========================================================================
+
+    /**
+     * Sends a reference photo directly to an Image-to-3D neural network endpoint
+     * (e.g., TripoSR, Stable Fast 3D, or TRELLIS) and streams back the generated .glb file.
+     *
+     * @param spaceUrl           Base URL of the Hugging Face Space or API endpoint.
+     * @param userToken          Optional Hugging Face Bearer Token.
+     * @param inputImageFile     Local reference image file on device.
+     * @param destinationGlbFile Output target .glb file on local device.
+     * @param callback           Callback receiving download progress and output file.
+     */
+    public void generateImageTo3D(String spaceUrl,
+                                  String userToken,
+                                  File inputImageFile,
+                                  File destinationGlbFile,
+                                  GenerationCallback callback) {
+        if (spaceUrl == null || spaceUrl.trim().isEmpty()) {
+            String err = "Hugging Face Space URL is not configured. Please set it in Settings.";
+            VynaraLogger.validation(VynaraLogger.LogLevel.ERROR, "HuggingFaceBridge: " + err);
+            callback.onError(err);
+            return;
+        }
+
+        if (inputImageFile == null || !inputImageFile.exists() || inputImageFile.length() <= 0) {
+            String err = "Input reference image file does not exist or is empty.";
+            VynaraLogger.validation(VynaraLogger.LogLevel.ERROR, "HuggingFaceBridge: " + err);
+            callback.onError(err);
+            return;
+        }
+
+        String normalizedUrl = normalizeUrl(spaceUrl);
+        String targetUrl = normalizedUrl + "/image_to_3d";
+
+        String mimeType = inputImageFile.getName().toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+        RequestBody fileBody = RequestBody.create(inputImageFile, MediaType.parse(mimeType));
+
+        RequestBody multipartBody = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("image", inputImageFile.getName(), fileBody)
+                .addFormDataPart("output_format", "glb")
+                .build();
+
+        Request.Builder requestBuilder = new Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", "Vynara-3D-Studio-Android")
+                .header("Accept", "model/gltf-binary, application/octet-stream")
+                .post(multipartBody);
+
+        if (userToken != null && !userToken.trim().isEmpty()) {
+            requestBuilder.header("Authorization", "Bearer " + userToken.trim());
+        }
+
+        VynaraLogger.system("HuggingFaceBridge: [OPTION C] Dispatching neural 3D synthesis to: " + targetUrl);
+
+        httpClient.newCall(requestBuilder.build()).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                VynaraLogger.e("HuggingFaceBridge: Neural Image-to-3D request failed: " + e.getMessage(), e);
+                mainHandler.post(() -> callback.onError("Network error: " + e.getMessage()));
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (!response.isSuccessful() || response.body() == null) {
+                    String errorMsg = "Neural worker returned HTTP " + response.code();
+                    if (response.body() != null) {
+                        try {
+                            errorMsg += ": " + response.body().string();
+                        } catch (Exception ignored) {}
+                    }
+                    VynaraLogger.e("HuggingFaceBridge: " + errorMsg);
+                    String finalMsg = errorMsg;
+                    mainHandler.post(() -> callback.onError(finalMsg));
+                    return;
+                }
+
+                VynaraLogger.system("HuggingFaceBridge: Streaming synthesized 3D mesh (" + response.body().contentLength() + " bytes)...");
+                streamResponseToFile(response.body(), destinationGlbFile, callback);
             }
         });
     }
