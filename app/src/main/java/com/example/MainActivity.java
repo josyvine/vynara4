@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.fragment.app.Fragment;
 
 import com.example.ai.ApiKeyManager;
+import com.example.ai.protocol.AIPipelineMode;
 import com.example.cloud.CloudProvider;
 import com.example.cloud.GitHubOAuthService;
 import com.example.runtime.ProjectRuntime;
@@ -184,11 +185,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void startProduction(String prompt) {
-        startProduction(prompt, "Photorealistic", "OpenGL ES / GLTF", new ArrayList<>());
+        startProduction(prompt, "Photorealistic", "OpenGL ES / GLTF", AIPipelineMode.PROCEDURAL_PYTHON.getId(), new ArrayList<>());
     }
 
     public void startProduction(String prompt, String style, String targetEngine, List<String> referenceImageUris) {
-        loadFragment(ProductionFragment.newInstance(prompt, style, targetEngine, referenceImageUris));
+        startProduction(prompt, style, targetEngine, AIPipelineMode.PROCEDURAL_PYTHON.getId(), referenceImageUris);
+    }
+
+    /**
+     * Primary production routing entry point carrying the strict pipeline mode.
+     */
+    public void startProduction(String prompt, String style, String targetEngine, String pipelineModeId, List<String> referenceImageUris) {
+        AIPipelineMode resolvedMode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
+        VynaraLogger.system("MainActivity: Routing production to -> " + resolvedMode.getDisplayName() + " [" + resolvedMode.getId() + "]");
+        loadFragment(ProductionFragment.newInstance(prompt, style, targetEngine, resolvedMode.getId(), referenceImageUris));
     }
 
     public ProjectRuntime getProjectRuntime() {
