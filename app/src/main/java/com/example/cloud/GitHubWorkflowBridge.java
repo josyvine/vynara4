@@ -37,7 +37,7 @@ public class GitHubWorkflowBridge {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
     private static final long POLLING_INTERVAL_MS = 4000; // 4 seconds interval
-    private static final long MAX_POLLING_DURATION_MS = 300000; // 5 minutes timeout
+    private static final long MAX_POLLING_DURATION_MS = 600000; // 10 minutes timeout (supports high-fidelity renders)
     private static final int MAX_ARTIFACT_RETRY_ATTEMPTS = 8; // 8 retries (20s window for run-specific artifact indexing)
     private static final long ARTIFACT_RETRY_DELAY_MS = 2500; // 2.5 seconds between artifact retries
 
@@ -738,6 +738,7 @@ public class GitHubWorkflowBridge {
         Request request = new Request.Builder()
                 .url(logsUrl)
                 .header("Authorization", "Bearer " + personalAccessToken.trim())
+                .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "Vynara-3D-Studio-Android")
                 .get()
                 .build();
