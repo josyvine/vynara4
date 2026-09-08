@@ -139,11 +139,16 @@ public class ProductionFragment extends Fragment {
         // Wire Solution B Failure Interceptor to ExecutionEngine
         setupSelfCorrectionInterceptor();
 
-        // Check if an existing plan is ALREADY RUNNING in the background (Fixes Issue 2)
-        ExecutionEngine engine = controller.getExecutionEngine();
+        // Check if an existing plan is ALREADY IN PROGRESS (Safe TaskGraph check; no isRunning() call)
         ProductionPlan existingPlan = controller.getCurrentPlan();
+        boolean isPlanActive = false;
+        if (existingPlan != null && existingPlan.getTaskGraph() != null) {
+            int completed = existingPlan.getTaskGraph().getCompletedCount();
+            int total = existingPlan.getTaskGraph().getTotalCount();
+            isPlanActive = (total > 0 && completed < total);
+        }
 
-        if (existingPlan != null && existingPlan.getTaskGraph() != null && engine != null && engine.isRunning()) {
+        if (isPlanActive) {
             VynaraLogger.system("ProductionFragment: Re-attaching to ongoing background generation...");
             activePlan = existingPlan;
             adapter.setTasks(activePlan.getTaskGraph().getAllNodes());
