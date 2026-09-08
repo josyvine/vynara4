@@ -217,9 +217,7 @@ public class MainActivity extends AppCompatActivity {
      * Checks whether an AI generation pipeline is actively running in the background.
      */
     public boolean isProductionRunning() {
-        return projectRuntime != null 
-                && projectRuntime.getExecutionEngine() != null 
-                && projectRuntime.getExecutionEngine().isRunning();
+        return activeProductionFragment != null;
     }
 
     public void clearActiveProduction() {
