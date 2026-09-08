@@ -198,69 +198,76 @@ public class GLTFImporter {
             }
         }
 
-        // 3. Parse Mesh Primitives & Material Indices
-        List<Mesh> parsedMeshes = new ArrayList<>();
-        List<Integer> meshMaterialIndices = new ArrayList<>();
+        // 3. Parse Mesh Primitives & Material Indices (Supports Multi-Primitive Meshes)
+        Map<Integer, List<Mesh>> parsedMeshesMap = new HashMap<>();
+        Map<Integer, List<Integer>> meshMaterialIndicesMap = new HashMap<>();
 
         if (meshesJson != null) {
             for (int m = 0; m < meshesJson.length(); m++) {
                 JSONObject meshObj = meshesJson.getJSONObject(m);
                 JSONArray primitives = meshObj.optJSONArray("primitives");
 
-                if (primitives != null && primitives.length() > 0) {
-                    JSONObject prim = primitives.getJSONObject(0);
-                    JSONObject attributes = prim.optJSONObject("attributes");
+                List<Mesh> subMeshes = new ArrayList<>();
+                List<Integer> matIndices = new ArrayList<>();
 
-                    float[] positions = null;
-                    float[] normals = null;
-                    float[] uvs = null;
-                    short[] indices = null;
+                if (primitives != null) {
+                    for (int p = 0; p < primitives.length(); p++) {
+                        JSONObject prim = primitives.getJSONObject(p);
+                        JSONObject attributes = prim.optJSONObject("attributes");
 
-                    if (attributes != null) {
-                        if (attributes.has("POSITION")) {
-                            int posAccessorIdx = attributes.getInt("POSITION");
-                            positions = readFloatAccessor(posAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                        float[] positions = null;
+                        float[] normals = null;
+                        float[] uvs = null;
+                        short[] indices = null;
+
+                        if (attributes != null) {
+                            if (attributes.has("POSITION")) {
+                                int posAccessorIdx = attributes.getInt("POSITION");
+                                positions = readFloatAccessor(posAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                            }
+
+                            if (attributes.has("NORMAL")) {
+                                int normAccessorIdx = attributes.getInt("NORMAL");
+                                normals = readFloatAccessor(normAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                            }
+
+                            if (attributes.has("TEXCOORD_0")) {
+                                int uvAccessorIdx = attributes.getInt("TEXCOORD_0");
+                                uvs = readFloatAccessor(uvAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                            }
                         }
 
-                        if (attributes.has("NORMAL")) {
-                            int normAccessorIdx = attributes.getInt("NORMAL");
-                            normals = readFloatAccessor(normAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                        if (prim.has("indices")) {
+                            int indicesAccessorIdx = prim.getInt("indices");
+                            indices = readShortAccessor(indicesAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
                         }
 
-                        if (attributes.has("TEXCOORD_0")) {
-                            int uvAccessorIdx = attributes.getInt("TEXCOORD_0");
-                            uvs = readFloatAccessor(uvAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                        if (positions == null) {
+                            positions = new float[]{-0.5f, 0, 0,  0.5f, 0, 0,  0, 1.0f, 0};
                         }
-                    }
-
-                    if (prim.has("indices")) {
-                        int indicesAccessorIdx = prim.getInt("indices");
-                        indices = readShortAccessor(indicesAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
-                    }
-
-                    if (positions == null) {
-                        positions = new float[]{-0.5f, 0, 0,  0.5f, 0, 0,  0, 1.0f, 0};
-                    }
-                    if (normals == null) {
-                        normals = new float[positions.length];
-                        for (int n = 0; n < normals.length; n += 3) {
-                            normals[n] = 0; normals[n+1] = 1.0f; normals[n+2] = 0;
+                        if (normals == null) {
+                            normals = new float[positions.length];
+                            for (int n = 0; n < normals.length; n += 3) {
+                                normals[n] = 0; normals[n+1] = 1.0f; normals[n+2] = 0;
+                            }
                         }
-                    }
-                    if (uvs == null) {
-                        uvs = new float[(positions.length / 3) * 2];
-                    }
-                    if (indices == null) {
-                        indices = new short[(short) (positions.length / 3)];
-                        for (short s = 0; s < indices.length; s++) indices[s] = s;
-                    }
+                        if (uvs == null) {
+                            uvs = new float[(positions.length / 3) * 2];
+                        }
+                        if (indices == null) {
+                            indices = new short[(short) (positions.length / 3)];
+                            for (short s = 0; s < indices.length; s++) indices[s] = s;
+                        }
 
-                    Mesh mesh = new Mesh(positions, normals, uvs, indices);
-                    parsedMeshes.add(mesh);
+                        Mesh mesh = new Mesh(positions, normals, uvs, indices);
+                        subMeshes.add(mesh);
 
-                    int matIdx = prim.optInt("material", -1);
-                    meshMaterialIndices.add(matIdx);
+                        int matIdx = prim.optInt("material", -1);
+                        matIndices.add(matIdx);
+                    }
                 }
+                parsedMeshesMap.put(m, subMeshes);
+                meshMaterialIndicesMap.put(m, matIndices);
             }
         }
 
@@ -310,55 +317,115 @@ public class GLTFImporter {
             }
         }
 
-        // 5. Assemble Scene Nodes with Matching Specific Materials
+        // 5. Assemble Scene Nodes with Matching Specific Materials (Build Node Hierarchy)
+        Map<Integer, SceneObject> nodeObjectMap = new HashMap<>();
+        List<SceneObject> allPrimaryObjects = new ArrayList<>();
+
         if (nodesJson != null) {
             for (int n = 0; n < nodesJson.length(); n++) {
                 JSONObject nodeObj = nodesJson.getJSONObject(n);
                 String nodeName = nodeObj.optString("name", "node_" + n);
 
+                SceneObject primaryObject = null;
+
                 if (nodeObj.has("mesh")) {
                     int meshIdx = nodeObj.getInt("mesh");
-                    if (meshIdx < parsedMeshes.size()) {
-                        Mesh mesh = parsedMeshes.get(meshIdx);
-                        int assignedMatIdx = (meshIdx < meshMaterialIndices.size()) ? meshMaterialIndices.get(meshIdx) : -1;
+                    List<Mesh> subMeshes = parsedMeshesMap.get(meshIdx);
+                    List<Integer> matIndices = meshMaterialIndicesMap.get(meshIdx);
 
-                        Material mat;
-                        if (assignedMatIdx >= 0 && assignedMatIdx < parsedMaterials.size()) {
-                            mat = parsedMaterials.get(assignedMatIdx);
-                        } else if (!parsedMaterials.isEmpty()) {
-                            mat = parsedMaterials.get(0);
-                        } else {
-                            mat = new Material("mat_def_" + n, "Default", 0.8f, 0.8f, 0.8f, 1.0f);
+                    if (subMeshes != null && !subMeshes.isEmpty()) {
+                        for (int p = 0; p < subMeshes.size(); p++) {
+                            Mesh mesh = subMeshes.get(p);
+                            int assignedMatIdx = (matIndices != null && p < matIndices.size()) ? matIndices.get(p) : -1;
+
+                            Material mat;
+                            if (assignedMatIdx >= 0 && assignedMatIdx < parsedMaterials.size()) {
+                                mat = parsedMaterials.get(assignedMatIdx);
+                            } else if (!parsedMaterials.isEmpty()) {
+                                mat = parsedMaterials.get(0);
+                            } else {
+                                mat = new Material("mat_def_" + n + "_" + p, "Default", 0.8f, 0.8f, 0.8f, 1.0f);
+                            }
+
+                            SceneObject sceneObject = new SceneObject("obj_" + n + "_" + p, nodeName + (p > 0 ? "_sub_" + p : ""), "MESH", mesh, mat);
+
+                            if (p == 0) {
+                                primaryObject = sceneObject;
+                                applyNodeTransformToObject(nodeObj, primaryObject);
+                            } else {
+                                // Add subsequent primitives as child objects to ensure unified translations
+                                if (primaryObject != null) {
+                                    primaryObject.addChild(sceneObject);
+                                }
+                            }
+
+                            if (nodeObj.has("skin") && !parsedSkeletons.isEmpty()) {
+                                CharacterSpecification spec = new CharacterSpecification("HUMANOID", nodeName);
+                                Character character = new Character("char_" + n, spec, sceneObject, parsedSkeletons.get(0));
+                                characters.add(character);
+                            }
                         }
+                    }
+                } else {
+                    // Create an empty transform node to preserve parent transformation offsets
+                    primaryObject = new SceneObject("empty_node_" + n, nodeName, "PRIMITIVE", null, null);
+                    applyNodeTransformToObject(nodeObj, primaryObject);
+                }
 
-                        SceneObject sceneObject = new SceneObject("obj_" + n, nodeName, "MESH", mesh, mat);
-                        applyNodeTransformToObject(nodeObj, sceneObject);
+                if (primaryObject != null) {
+                    nodeObjectMap.put(n, primaryObject);
+                    allPrimaryObjects.add(primaryObject);
+                }
+            }
 
-                        if (nodeObj.has("skin") && !parsedSkeletons.isEmpty()) {
-                            CharacterSpecification spec = new CharacterSpecification("HUMANOID", nodeName);
-                            Character character = new Character("char_" + n, spec, sceneObject, parsedSkeletons.get(0));
-                            characters.add(character);
-                        } else {
-                            sceneObjects.add(sceneObject);
+            // 5b. Map Parent-Child Relationships Across the Entire Scene Graph
+            for (int n = 0; n < nodesJson.length(); n++) {
+                JSONObject nodeObj = nodesJson.getJSONObject(n);
+                JSONArray children = nodeObj.optJSONArray("children");
+                if (children != null) {
+                    SceneObject parentObj = nodeObjectMap.get(n);
+                    if (parentObj != null) {
+                        for (int c = 0; c < children.length(); c++) {
+                            int childNodeIdx = children.getInt(c);
+                            SceneObject childObj = nodeObjectMap.get(childNodeIdx);
+                            if (childObj != null) {
+                                parentObj.addChild(childObj);
+                            }
                         }
+                    }
+                }
+            }
+
+            // 5c. Only return Root-level SceneObjects (nested children are rendered recursively)
+            for (SceneObject obj : allPrimaryObjects) {
+                if (obj.getParent() == null) {
+                    sceneObjects.add(obj);
+                }
+            }
+        }
+
+        // Fallback safety mapping if node structure parser was bypassed
+        if (sceneObjects.isEmpty() && characters.isEmpty() && !parsedMeshesMap.isEmpty()) {
+            for (Map.Entry<Integer, List<Mesh>> entry : parsedMeshesMap.entrySet()) {
+                int i = entry.getKey();
+                List<Mesh> subMeshes = entry.getValue();
+                List<Integer> matIndices = meshMaterialIndicesMap.get(i);
+
+                if (subMeshes != null) {
+                    for (int p = 0; p < subMeshes.size(); p++) {
+                        int assignedMatIdx = (matIndices != null && p < matIndices.size()) ? matIndices.get(p) : -1;
+                        Material mat = (assignedMatIdx >= 0 && assignedMatIdx < parsedMaterials.size()) 
+                                ? parsedMaterials.get(assignedMatIdx) 
+                                : (parsedMaterials.isEmpty() ? new Material("mat_def", "Default", 0.8f, 0.8f, 0.8f, 1.0f) : parsedMaterials.get(0));
+
+                        SceneObject obj = new SceneObject("imported_obj_" + i + "_" + p, "Imported Mesh " + i + " Primitive " + p, "MESH", subMeshes.get(p), mat);
+                        sceneObjects.add(obj);
                     }
                 }
             }
         }
 
-        if (sceneObjects.isEmpty() && characters.isEmpty() && !parsedMeshes.isEmpty()) {
-            for (int i = 0; i < parsedMeshes.size(); i++) {
-                int assignedMatIdx = (i < meshMaterialIndices.size()) ? meshMaterialIndices.get(i) : -1;
-                Material mat = (assignedMatIdx >= 0 && assignedMatIdx < parsedMaterials.size()) 
-                        ? parsedMaterials.get(assignedMatIdx) 
-                        : (parsedMaterials.isEmpty() ? new Material("mat_def", "Default", 0.8f, 0.8f, 0.8f, 1.0f) : parsedMaterials.get(0));
-
-                SceneObject obj = new SceneObject("imported_obj_" + i, "Imported Mesh " + i, "MESH", parsedMeshes.get(i), mat);
-                sceneObjects.add(obj);
-            }
-        }
-
-        VynaraLogger.system("GLTFImporter: Import complete (" + sceneObjects.size() + " objects, " + characters.size() + " rigged characters)");
+        VynaraLogger.system("GLTFImporter: Import complete (" + sceneObjects.size() + " root objects, " + characters.size() + " rigged characters)");
         return new ImportResult(sceneObjects, characters);
     }
 
@@ -438,6 +505,18 @@ public class GLTFImporter {
             );
         }
 
+        // Extract quaternion rotation array [x, y, z, w], convert to Euler degrees, and set on Transform
+        JSONArray rotation = nodeObj.optJSONArray("rotation");
+        if (rotation != null && rotation.length() >= 4) {
+            float qx = (float) rotation.optDouble(0, 0.0);
+            float qy = (float) rotation.optDouble(1, 0.0);
+            float qz = (float) rotation.optDouble(2, 0.0);
+            float qw = (float) rotation.optDouble(3, 1.0);
+
+            float[] euler = quaternionToEulerDegrees(qx, qy, qz, qw);
+            transform.setRotation(euler[0], euler[1], euler[2]);
+        }
+
         JSONArray scale = nodeObj.optJSONArray("scale");
         if (scale != null && scale.length() >= 3) {
             transform.setScale(
@@ -446,6 +525,31 @@ public class GLTFImporter {
                     (float) scale.optDouble(2, 1.0)
             );
         }
+    }
+
+    // Mathematical utility to convert Quaternion [x, y, z, w] to Euler Angles in degrees (XYZ order)
+    private static float[] quaternionToEulerDegrees(float x, float y, float z, float w) {
+        float[] euler = new float[3];
+
+        // Roll (X-axis rotation)
+        double sinr_cosp = 2.0 * (w * x + y * z);
+        double cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
+        euler[0] = (float) Math.toDegrees(Math.atan2(sinr_cosp, cosr_cosp));
+
+        // Pitch (Y-axis rotation)
+        double sinp = 2.0 * (w * y - z * x);
+        if (Math.abs(sinp) >= 1.0) {
+            euler[1] = (float) Math.toDegrees(Math.copySign(Math.PI / 2.0, sinp));
+        } else {
+            euler[1] = (float) Math.toDegrees(Math.asin(sinp));
+        }
+
+        // Yaw (Z-axis rotation)
+        double siny_cosp = 2.0 * (w * z + x * y);
+        double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
+        euler[2] = (float) Math.toDegrees(Math.atan2(siny_cosp, cosy_cosp));
+
+        return euler;
     }
 
     private static byte[] readAllBytes(InputStream inputStream) throws Exception {
