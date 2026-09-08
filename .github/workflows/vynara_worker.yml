@@ -139,6 +139,8 @@ jobs:
           bpy_script = bpy_script.replace("['Transmission'].default_value", "['Transmission Weight'].default_value")
           bpy_script = bpy_script.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value")
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
+          bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'BLENDER_EEVEE_NEXT'")
+          bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"BLENDER_EEVEE_NEXT"')
 
           # Auto-Repair 6: SCOPED Texture Type Fix (Never corrupt light or curve types!)
           valid_tex = {'NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'}
@@ -168,13 +170,14 @@ jobs:
               bpy_script += (
                   "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
                   "try:\n"
+                  "    import os, math\n"
                   "    if not os.path.exists('output/render.png'):\n"
                   "        if not bpy.context.scene.camera:\n"
                   "            bpy.ops.object.camera_add(location=(5, -5, 4), rotation=(math.radians(60), 0, math.radians(45)))\n"
                   "            bpy.context.scene.camera = bpy.context.active_object\n"
                   "        bpy.context.scene.render.engine = 'CYCLES'\n"
                   "        bpy.context.scene.cycles.device = 'CPU'\n"
-                  "        bpy.context.scene.cycles.samples = 128\n"
+                  "        bpy.context.scene.cycles.samples = 16\n"
                   "        bpy.context.scene.cycles.use_denoising = True\n"
                   "        bpy.context.scene.render.resolution_x = 1280\n"
                   "        bpy.context.scene.render.resolution_y = 720\n"
