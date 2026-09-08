@@ -120,9 +120,14 @@ public class ProductionFragment extends Fragment {
         rvTasks = view.findViewById(R.id.rv_tasks);
 
         AIPipelineMode activeMode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
-        VynaraLogger.system("ProductionFragment: Launching active pipeline -> " + activeMode.getDisplayName() + " [" + activeMode.getId() + "]");
+        VynaraLogger.system("ProductionFragment: Active pipeline mode -> " + activeMode.getDisplayName() + " [" + activeMode.getId() + "]");
 
-        tvProjectTitle.setText("Creating: " + prompt);
+        // Format prompt title with ellipsis if long to keep header clean
+        String displayTitle = prompt;
+        if (displayTitle != null && displayTitle.length() > 60) {
+            displayTitle = displayTitle.substring(0, 60) + "...";
+        }
+        tvProjectTitle.setText("Creating: " + displayTitle);
 
         rvTasks.setLayoutManager(new LinearLayoutManager(getContext()));
         adapter = new TaskNodeAdapter();
@@ -134,7 +139,31 @@ public class ProductionFragment extends Fragment {
         // Wire Solution B Failure Interceptor to ExecutionEngine
         setupSelfCorrectionInterceptor();
 
-        // Set UI loading state
+        // Check if an existing plan is ALREADY RUNNING in the background (Fixes Issue 2)
+        ExecutionEngine engine = controller.getExecutionEngine();
+        ProductionPlan existingPlan = controller.getCurrentPlan();
+
+        if (existingPlan != null && existingPlan.getTaskGraph() != null && engine != null && engine.isRunning()) {
+            VynaraLogger.system("ProductionFragment: Re-attaching to ongoing background generation...");
+            activePlan = existingPlan;
+            adapter.setTasks(activePlan.getTaskGraph().getAllNodes());
+            progressBar.setIndeterminate(false);
+
+            int completed = activePlan.getTaskGraph().getCompletedCount();
+            int total = activePlan.getTaskGraph().getTotalCount();
+            int percent = total > 0 ? (int) (((float) completed / total) * 100) : 0;
+
+            progressBar.setProgress(percent);
+            tvProgressPercent.setText(percent + "%");
+            tvTaskCounter.setText("Tasks: " + completed + " / " + total);
+            tvStatus.setText("Executing: " + activePlan.getProjectName());
+
+            resumeExecutionListener();
+            setupActionButtons(view);
+            return;
+        }
+
+        // Set UI loading state for new generation
         progressBar.setIndeterminate(true);
         boolean isCustomScript = prompt != null && prompt.startsWith("Custom Script:");
 
@@ -179,6 +208,10 @@ public class ProductionFragment extends Fragment {
             }
         });
 
+        setupActionButtons(view);
+    }
+
+    private void setupActionButtons(View view) {
         Button btnPause = view.findViewById(R.id.btn_pause_production);
         if (btnPause != null) {
             btnPause.setOnClickListener(v -> {
@@ -203,6 +236,7 @@ public class ProductionFragment extends Fragment {
                 VynaraLogger.system("ProductionFragment: Generation cancelled by user.");
                 controller.getExecutionEngine().cancel();
                 if (getActivity() instanceof MainActivity) {
+                    ((MainActivity) getActivity()).clearActiveProduction();
                     ((MainActivity) getActivity()).navigateToCreate();
                 }
             });
@@ -216,6 +250,13 @@ public class ProductionFragment extends Fragment {
                 }
             });
         }
+    }
+
+    /**
+     * Resumes listening to an ongoing background execution when returning from other tabs.
+     */
+    private void resumeExecutionListener() {
+        startRealExecutionPipeline();
     }
 
     /**
@@ -417,6 +458,11 @@ public class ProductionFragment extends Fragment {
                     tvProgressPercent.setText("100%");
                     tvTaskCounter.setText("Tasks: " + graph.getTotalCount() + " / " + graph.getTotalCount());
                     VynaraLogger.system("ProductionFragment: TaskGraph completed all tasks cleanly.");
+                    
+                    if (getActivity() instanceof MainActivity) {
+                        ((MainActivity) getActivity()).clearActiveProduction();
+                    }
+                    
                     Toast.makeText(getContext(), "3D Generation Complete!", Toast.LENGTH_LONG).show();
                 });
             }
