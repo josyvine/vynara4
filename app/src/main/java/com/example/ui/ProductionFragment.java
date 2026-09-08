@@ -1,12 +1,20 @@
 package com.example.ui;
 
+import android.app.Dialog;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -22,6 +30,7 @@ import com.example.R;
 import com.example.ai.AIProductionController;
 import com.example.ai.GeminiApiClient;
 import com.example.ai.agents.BlenderWorkerAgent;
+import com.example.ai.protocol.AIPipelineMode;
 import com.example.cloud.GitHubWorkflowBridge;
 import com.example.tasks.ExecutionEngine;
 import com.example.tasks.ProductionPlan;
@@ -39,6 +48,7 @@ public class ProductionFragment extends Fragment {
     private static final String ARG_PROMPT = "arg_prompt";
     private static final String ARG_STYLE = "arg_style";
     private static final String ARG_ENGINE = "arg_engine";
+    private static final String ARG_PIPELINE_MODE = "arg_pipeline_mode";
     private static final String ARG_REF_IMAGES = "arg_ref_images";
 
     private TextView tvProjectTitle;
@@ -52,21 +62,32 @@ public class ProductionFragment extends Fragment {
     private String prompt = "3D Asset Creation";
     private String style = "Photorealistic";
     private String targetEngine = "OpenGL ES / GLTF";
+    private String pipelineModeId = AIPipelineMode.PROCEDURAL_PYTHON.getId();
     private ArrayList<String> referenceImageUris = new ArrayList<>();
 
     private AIProductionController controller;
     private ProductionPlan activePlan;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    public static ProductionFragment newInstance(String prompt, String style, String targetEngine, List<String> referenceImageUris) {
+    public interface CheckpointFeedbackCallback {
+        void onRequestChanges(String userFeedback);
+        void onApprove();
+    }
+
+    public static ProductionFragment newInstance(String prompt, String style, String targetEngine, String pipelineModeId, List<String> referenceImageUris) {
         ProductionFragment fragment = new ProductionFragment();
         Bundle args = new Bundle();
         args.putString(ARG_PROMPT, prompt);
         args.putString(ARG_STYLE, style);
         args.putString(ARG_ENGINE, targetEngine);
+        args.putString(ARG_PIPELINE_MODE, pipelineModeId);
         args.putStringArrayList(ARG_REF_IMAGES, referenceImageUris != null ? new ArrayList<>(referenceImageUris) : new ArrayList<>());
         fragment.setArguments(args);
         return fragment;
+    }
+
+    public static ProductionFragment newInstance(String prompt, String style, String targetEngine, List<String> referenceImageUris) {
+        return newInstance(prompt, style, targetEngine, AIPipelineMode.PROCEDURAL_PYTHON.getId(), referenceImageUris);
     }
 
     @Override
@@ -76,6 +97,7 @@ public class ProductionFragment extends Fragment {
             prompt = getArguments().getString(ARG_PROMPT, prompt);
             style = getArguments().getString(ARG_STYLE, style);
             targetEngine = getArguments().getString(ARG_ENGINE, targetEngine);
+            pipelineModeId = getArguments().getString(ARG_PIPELINE_MODE, AIPipelineMode.PROCEDURAL_PYTHON.getId());
             referenceImageUris = getArguments().getStringArrayList(ARG_REF_IMAGES);
         }
     }
@@ -97,6 +119,9 @@ public class ProductionFragment extends Fragment {
         progressBar = view.findViewById(R.id.progress_production);
         rvTasks = view.findViewById(R.id.rv_tasks);
 
+        AIPipelineMode activeMode = AIPipelineMode.fromDisplayNameSafe(pipelineModeId);
+        VynaraLogger.system("ProductionFragment: Launching active pipeline -> " + activeMode.getDisplayName() + " [" + activeMode.getId() + "]");
+
         tvProjectTitle.setText("Creating: " + prompt);
 
         rvTasks.setLayoutManager(new LinearLayoutManager(getContext()));
@@ -112,9 +137,21 @@ public class ProductionFragment extends Fragment {
         // Set UI loading state
         progressBar.setIndeterminate(true);
         boolean isCustomScript = prompt != null && prompt.startsWith("Custom Script:");
-        tvStatus.setText(isCustomScript ? "Packaging custom Python script for execution..." : "AI: Devising 3D production plan with Gemini...");
 
-        controller.generatePlanWithGemini(prompt, style, targetEngine, referenceImageUris, new GeminiApiClient.ApiCallback<ProductionPlan>() {
+        if (isCustomScript) {
+            tvStatus.setText("Packaging custom Python script for execution...");
+        } else if (activeMode.isNeural()) {
+            tvStatus.setText("Option C: Initializing Neural Image-to-3D Reconstruction...");
+        } else if (activeMode.isInteractive()) {
+            tvStatus.setText("Option B2: Preparing Interactive AI Design Checkpoints...");
+        } else if (activeMode.isAgentic()) {
+            tvStatus.setText("Option B1: Initializing Autonomous AI Vision Design Loop...");
+        } else {
+            tvStatus.setText("Option A: Devising 3D production plan with Gemini...");
+        }
+
+        // Generate Plan with strict pipeline mode routing
+        controller.generatePlanWithGemini(prompt, style, targetEngine, activeMode.getId(), referenceImageUris, new GeminiApiClient.ApiCallback<ProductionPlan>() {
             @Override
             public void onSuccess(ProductionPlan plan) {
                 handler.post(() -> {
@@ -125,6 +162,7 @@ public class ProductionFragment extends Fragment {
                         startRealExecutionPipeline();
                     } else {
                         tvStatus.setText("AI Error: Generated production plan was empty.");
+                        VynaraLogger.e("ProductionFragment: Received null or empty TaskGraph from controller.");
                     }
                 });
             }
@@ -135,6 +173,7 @@ public class ProductionFragment extends Fragment {
                     progressBar.setIndeterminate(false);
                     progressBar.setProgress(0);
                     tvStatus.setText("AI Error: Generation Failed.");
+                    VynaraLogger.e("ProductionFragment: Plan generation failed -> " + errorMessage);
                     Toast.makeText(getContext(), "AI Workflow Halted: " + errorMessage, Toast.LENGTH_LONG).show();
                 });
             }
@@ -147,10 +186,12 @@ public class ProductionFragment extends Fragment {
                 if (engine.isPaused()) {
                     engine.resume();
                     btnPause.setText("Pause");
+                    VynaraLogger.system("ProductionFragment: Pipeline execution resumed by user.");
                     Toast.makeText(getContext(), "Pipeline Resumed", Toast.LENGTH_SHORT).show();
                 } else {
                     engine.pause();
                     btnPause.setText("Resume");
+                    VynaraLogger.system("ProductionFragment: Pipeline execution paused by user.");
                     Toast.makeText(getContext(), "Pipeline Paused", Toast.LENGTH_SHORT).show();
                 }
             });
@@ -159,6 +200,7 @@ public class ProductionFragment extends Fragment {
         Button btnCancel = view.findViewById(R.id.btn_cancel_production);
         if (btnCancel != null) {
             btnCancel.setOnClickListener(v -> {
+                VynaraLogger.system("ProductionFragment: Generation cancelled by user.");
                 controller.getExecutionEngine().cancel();
                 if (getActivity() instanceof MainActivity) {
                     ((MainActivity) getActivity()).navigateToCreate();
@@ -178,7 +220,6 @@ public class ProductionFragment extends Fragment {
 
     /**
      * SOLUTION B: Configures the autonomous AI self-correction interceptor on the execution engine.
-     * Operates seamlessly for both prompt-driven builds and custom uploaded .py scripts.
      */
     private void setupSelfCorrectionInterceptor() {
         ExecutionEngine engine = controller.getExecutionEngine();
@@ -190,7 +231,6 @@ public class ProductionFragment extends Fragment {
                 return false;
             }
 
-            // Retrieve failure traceback from error.txt or task log
             String traceback = GitHubWorkflowBridge.getLastBlenderTraceback();
             if (traceback == null || traceback.trim().isEmpty()) {
                 traceback = GitHubWorkflowBridge.getLastBlenderError();
@@ -199,7 +239,6 @@ public class ProductionFragment extends Fragment {
                 traceback = task.getErrorMessage();
             }
 
-            // Retrieve the faulty Python script (from task param, repaired buffer, or worker agent)
             String failedScript = task.getRepairedScript();
             if (failedScript == null || failedScript.trim().isEmpty()) {
                 if (task.getOperation() != null) {
@@ -220,7 +259,6 @@ public class ProductionFragment extends Fragment {
 
             handler.post(() -> tvStatus.setText("AI Self-Correction: Repairing Blender script..."));
 
-            // Safe repair prompt handling (supports prompt-free script execution)
             String repairPrompt = (prompt != null && !prompt.trim().isEmpty())
                     ? prompt
                     : "Custom Blender Python script (Prompt omitted). Fix all runtime and syntax errors.";
@@ -232,23 +270,19 @@ public class ProductionFragment extends Fragment {
                 return false;
             }
 
-            // Record repair state and increment attempt
             task.incrementRetryCount();
             task.setRepairedScript(repairedScript);
             task.setLastTraceback(traceback);
             task.setStatus(TaskNode.Status.RETRYING);
 
-            // Mandatory System Console Log for Solution B
             VynaraLogger.logSelfCorrectionRepair();
 
             handler.post(() -> tvStatus.setText("AI Self-Correction: Re-dispatching build (Attempt 2)..."));
 
-            // Update task operation with repaired script
             if (task.getOperation() != null) {
                 task.getOperation().setParam("bpyScript", repairedScript);
             }
 
-            // Re-execute tool operation for Attempt 2
             ToolExecutor executor = controller.getToolExecutor() != null 
                     ? controller.getToolExecutor() 
                     : controller.getRuntime().getToolExecutor();
@@ -266,11 +300,90 @@ public class ProductionFragment extends Fragment {
     }
 
     /**
+     * OPTION B2: Displays the interactive checkpoint review dialog on device.
+     */
+    public void showCheckpointReviewDialog(File renderSnapshotFile, String stepBadgeText, String aiCritiqueNotes, CheckpointFeedbackCallback callback) {
+        if (getContext() == null || getActivity() == null || getActivity().isFinishing()) return;
+
+        handler.post(() -> {
+            Dialog dialog = new Dialog(requireContext());
+            dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            dialog.setContentView(R.layout.dialog_checkpoint_review);
+
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            }
+            dialog.setCancelable(false);
+
+            ImageView ivRender = dialog.findViewById(R.id.iv_checkpoint_render);
+            TextView tvBadge = dialog.findViewById(R.id.tv_checkpoint_step_badge);
+            TextView tvNotes = dialog.findViewById(R.id.tv_ai_critique_notes);
+            EditText etFeedback = dialog.findViewById(R.id.et_user_feedback);
+            Button btnRequestChanges = dialog.findViewById(R.id.btn_request_changes);
+            Button btnApproveFinalize = dialog.findViewById(R.id.btn_approve_finalize);
+            View btnCancel = dialog.findViewById(R.id.btn_cancel_review);
+
+            if (tvBadge != null && stepBadgeText != null) {
+                tvBadge.setText(stepBadgeText);
+            }
+            if (tvNotes != null && aiCritiqueNotes != null) {
+                tvNotes.setText(aiCritiqueNotes);
+            }
+
+            if (ivRender != null && renderSnapshotFile != null && renderSnapshotFile.exists()) {
+                try {
+                    Bitmap bmp = BitmapFactory.decodeFile(renderSnapshotFile.getAbsolutePath());
+                    if (bmp != null) {
+                        ivRender.setImageBitmap(bmp);
+                    }
+                } catch (Exception e) {
+                    VynaraLogger.e("ProductionFragment: Failed decoding render snapshot for dialog: " + e.getMessage());
+                }
+            }
+
+            if (btnRequestChanges != null) {
+                btnRequestChanges.setOnClickListener(v -> {
+                    String feedbackText = (etFeedback != null) ? etFeedback.getText().toString().trim() : "";
+                    if (feedbackText.isEmpty()) {
+                        feedbackText = "Refine proportions and align vertices closer to the reference image.";
+                    }
+                    VynaraLogger.execution("ProductionFragment: User submitted checkpoint feedback: " + feedbackText);
+                    dialog.dismiss();
+                    if (callback != null) {
+                        callback.onRequestChanges(feedbackText);
+                    }
+                });
+            }
+
+            if (btnApproveFinalize != null) {
+                btnApproveFinalize.setOnClickListener(v -> {
+                    VynaraLogger.system("ProductionFragment: User approved checkpoint. Finalizing 3D model...");
+                    dialog.dismiss();
+                    if (callback != null) {
+                        callback.onApprove();
+                    }
+                });
+            }
+
+            if (btnCancel != null) {
+                btnCancel.setOnClickListener(v -> {
+                    VynaraLogger.system("ProductionFragment: User dismissed checkpoint review dialog.");
+                    dialog.dismiss();
+                });
+            }
+
+            dialog.show();
+        });
+    }
+
+    /**
      * Executes the background tool execution pipeline on the shared runtime.
      */
     private void startRealExecutionPipeline() {
         if (activePlan == null || activePlan.getTaskGraph() == null) {
             tvStatus.setText("AI Error: Failed to compile production plan.");
+            VynaraLogger.e("ProductionFragment: Active plan or TaskGraph is null. Execution aborted.");
             return;
         }
 
@@ -289,7 +402,7 @@ public class ProductionFragment extends Fragment {
                     int completed = graph.getCompletedCount();
                     int total = graph.getTotalCount();
                     int percent = (int) (((float) completed / total) * 100);
-                    
+
                     progressBar.setProgress(percent);
                     tvProgressPercent.setText(percent + "%");
                     tvTaskCounter.setText("Tasks: " + completed + " / " + total);
@@ -303,6 +416,7 @@ public class ProductionFragment extends Fragment {
                     progressBar.setProgress(100);
                     tvProgressPercent.setText("100%");
                     tvTaskCounter.setText("Tasks: " + graph.getTotalCount() + " / " + graph.getTotalCount());
+                    VynaraLogger.system("ProductionFragment: TaskGraph completed all tasks cleanly.");
                     Toast.makeText(getContext(), "3D Generation Complete!", Toast.LENGTH_LONG).show();
                 });
             }
@@ -311,6 +425,7 @@ public class ProductionFragment extends Fragment {
             public void onError(String errorMessage) {
                 handler.post(() -> {
                     tvStatus.setText("AI Error: Pipeline Halted.");
+                    VynaraLogger.e("ProductionFragment: Pipeline execution error: " + errorMessage);
                     Toast.makeText(getContext(), "Workflow halted: " + errorMessage, Toast.LENGTH_LONG).show();
                 });
             }
