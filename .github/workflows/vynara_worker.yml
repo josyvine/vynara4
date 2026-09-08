@@ -2,7 +2,7 @@ name: Vynara Blender Worker
 
 on:
   repository_dispatch:
-    types: [vynara_generate]
+    types: [vynara_generate, vynara_agentic_auto, vynara_agentic_interactive, vynara_neural_reconstruct]
 
 jobs:
   build_3d_asset:
@@ -135,7 +135,7 @@ jobs:
           bpy_script = bpy_script.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(")
           bpy_script = bpy_script.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.")
 
-          # Auto-Repair 5: Blender 4.2+ Principled BSDF socket updates
+          # Auto-Repair 5: Blender 4.2+ Principled BSDF & EEVEE engine updates
           bpy_script = bpy_script.replace("['Transmission'].default_value", "['Transmission Weight'].default_value")
           bpy_script = bpy_script.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value")
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
@@ -165,12 +165,12 @@ jobs:
                   "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
               )
 
-          # Auto-Repair 8: Production Denoised Cycles Snapshot (128 samples with OpenImageDenoise)
+          # Auto-Repair 8: Production Denoised Cycles Snapshot (16 samples for rapid cloud execution)
           if 'output/render.png' not in bpy_script:
               bpy_script += (
                   "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
                   "try:\n"
-                  "    import os, math\n"
+                  "    import os, math, bpy\n"
                   "    if not os.path.exists('output/render.png'):\n"
                   "        if not bpy.context.scene.camera:\n"
                   "            bpy.ops.object.camera_add(location=(5, -5, 4), rotation=(math.radians(60), 0, math.radians(45)))\n"
@@ -185,6 +185,17 @@ jobs:
                   "        bpy.ops.render.render(write_still=True)\n"
                   "        print('Production Cycles snapshot complete: output/render.png')\n"
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
+              )
+
+          # Auto-Repair 9: Project State Checkpoint for Option B2 Interactive Sessions
+          if 'bpy.ops.wm.save_as_mainfile' not in bpy_script:
+              bpy_script += (
+                  "\n\n# Save Checkpoint Project for Interactive Iteration\n"
+                  "try:\n"
+                  "    import bpy\n"
+                  "    bpy.ops.wm.save_as_mainfile(filepath='output/project.blend')\n"
+                  "    print('Saved project checkpoint: output/project.blend')\n"
+                  "except Exception as pe: print(f'Blend save note: {pe}')\n"
               )
 
           with open('run_task.py', 'w', encoding='utf-8') as f:
@@ -215,6 +226,15 @@ jobs:
                       ef.write(traceback_str + '\n')
                   print("EXTRACTED TRACEBACK TO error.txt:\n" + traceback_str)
           EOF
+
+          # Normalize any exported .glb to model.glb so the Android app can consume it
+          if [ ! -f output/model.glb ]; then
+            FIRST_GLB=$(ls output/*.glb 2>/dev/null | head -n 1)
+            if [ -n "$FIRST_GLB" ]; then
+              cp "$FIRST_GLB" output/model.glb
+              echo "Normalized $FIRST_GLB -> output/model.glb"
+            fi
+          fi
 
           # Verify output assets
           if [ -f output/model.glb ]; then
