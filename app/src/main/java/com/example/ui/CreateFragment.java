@@ -29,6 +29,7 @@ import androidx.fragment.app.Fragment;
 import com.example.MainActivity;
 import com.example.R;
 import com.example.ai.ApiKeyManager;
+import com.example.ai.protocol.AIPipelineMode;
 import com.example.utils.VynaraLogger;
 
 import java.io.File;
@@ -64,6 +65,7 @@ public class CreateFragment extends Fragment {
                     if (uris != null && !uris.isEmpty()) {
                         selectedImageUris.addAll(uris);
                         updateReferenceUI();
+                        VynaraLogger.system("CreateFragment: " + uris.size() + " reference image(s) attached.");
                         Toast.makeText(getContext(), uris.size() + " reference image(s) added successfully!", Toast.LENGTH_SHORT).show();
                     } else {
                         Toast.makeText(getContext(), "No reference image selected", Toast.LENGTH_SHORT).show();
@@ -83,6 +85,7 @@ public class CreateFragment extends Fragment {
                         }
                         updateReferenceUI();
                         etPrompt.setHint("Script attached: " + selectedScriptFileName + " (Prompt is optional)");
+                        VynaraLogger.system("CreateFragment: Attached Python script: " + selectedScriptFileName);
                         Toast.makeText(getContext(), "Attached Python Script: " + selectedScriptFileName + "\nPrompt is now optional.", Toast.LENGTH_LONG).show();
                     }
                 }
@@ -127,7 +130,7 @@ public class CreateFragment extends Fragment {
         if (getContext() != null) {
             ApiKeyManager keyMgr = new ApiKeyManager(getContext());
             String activeModel = keyMgr.getSelectedModel();
-            
+
             TextView tvConnectionStatus = view.findViewById(R.id.tv_model_badge);
             if (tvConnectionStatus == null) {
                 tvConnectionStatus = view.findViewById(R.id.tv_connection_status);
@@ -155,14 +158,13 @@ public class CreateFragment extends Fragment {
         View btnAddRef = view.findViewById(R.id.btn_add_reference);
         if (btnAddRef != null) {
             btnAddRef.setOnClickListener(v -> checkPermissionAndPickImages());
-            // Convenience: Long press opens Python script file picker
             btnAddRef.setOnLongClickListener(v -> {
                 openScriptPicker();
                 return true;
             });
         }
 
-        // Dedicated Upload Script button (if present in XML layout)
+        // Dedicated Upload Script button (if present in XML)
         int uploadScriptId = view.getResources().getIdentifier("btn_upload_script", "id", requireContext().getPackageName());
         View btnUploadScript = (uploadScriptId != 0) ? view.findViewById(uploadScriptId) : null;
         if (btnUploadScript != null) {
@@ -178,6 +180,7 @@ public class CreateFragment extends Fragment {
                     selectedScriptFileName = null;
                     etPrompt.setHint("Describe your 3D vision, structure, or mood...");
                     updateReferenceUI();
+                    VynaraLogger.system("CreateFragment: Cleared all attachments.");
                     Toast.makeText(getContext(), "Attachments cleared", Toast.LENGTH_SHORT).show();
                 }
             });
@@ -204,25 +207,51 @@ public class CreateFragment extends Fragment {
         setupPresetButton(view, R.id.preset_sofa, "Create a modern luxury leather sofa with realistic cushion seams, metallic legs, and wood trim.");
         setupPresetButton(view, R.id.preset_village, "Create a high-detail tropical village environment with wooden huts, sand terrain, palm trees, and ocean shoreline.");
 
-        // Generate button
+        // Generate button with Strict Pre-Flight Validation (ZERO Silent Fallback)
         Button btnGenerate = view.findViewById(R.id.btn_create_generate);
         if (btnGenerate != null) {
             btnGenerate.setOnClickListener(v -> {
                 String prompt = etPrompt.getText().toString().trim();
 
-                // If a Python script is uploaded, prompt is completely optional
                 if (selectedScriptUri != null) {
                     if (prompt.isEmpty()) {
                         prompt = "Custom Script: " + (selectedScriptFileName != null ? selectedScriptFileName : "custom_model.py");
                     }
                 } else {
                     if (prompt.isEmpty()) {
-                        prompt = "Modern Villa & Swimming Pool";
+                        prompt = "Modern Two Story Beach Villa";
                     }
                 }
 
                 String style = spinnerStyle.getSelectedItem() != null ? spinnerStyle.getSelectedItem().toString() : "Photorealistic";
                 String targetEngine = spinnerTarget.getSelectedItem() != null ? spinnerTarget.getSelectedItem().toString() : "Blender Native";
+
+                // Resolve selected mode strictly
+                AIPipelineMode selectedPipelineMode = AIPipelineMode.PROCEDURAL_PYTHON;
+                if (spinnerAutoMode.getSelectedItem() != null) {
+                    selectedPipelineMode = AIPipelineMode.fromDisplayNameSafe(spinnerAutoMode.getSelectedItem().toString());
+                }
+
+                VynaraLogger.system("CreateFragment: User tapped Generate -> Pipeline: " + selectedPipelineMode.getDisplayName());
+
+                // Perform strict pre-flight execution contract validation
+                boolean hasPrompt = !prompt.isEmpty();
+                boolean hasScript = (selectedScriptUri != null);
+                int refImgCount = selectedImageUris.size();
+                boolean hasCloudAuth = false;
+                if (getContext() != null) {
+                    ApiKeyManager keyMgr = new ApiKeyManager(getContext());
+                    hasCloudAuth = keyMgr.hasApiKey();
+                }
+
+                AIPipelineMode.ExecutionValidationStatus contractStatus =
+                        selectedPipelineMode.validateExecutionContract(hasPrompt, hasScript, refImgCount, hasCloudAuth);
+
+                if (!contractStatus.isValid()) {
+                    VynaraLogger.validation(VynaraLogger.LogLevel.ERROR, "CreateFragment: Pre-flight check FAILED: " + contractStatus.getErrorMessage());
+                    Toast.makeText(getContext(), contractStatus.getErrorMessage(), Toast.LENGTH_LONG).show();
+                    return; // STRICT HALT: Stops execution immediately to prevent silent fallback!
+                }
 
                 List<String> refUrisStrList = new ArrayList<>();
 
@@ -242,8 +271,16 @@ public class CreateFragment extends Fragment {
                     }
                 }
 
+                VynaraLogger.system("CreateFragment: Dispatching verified production plan -> Mode: " + selectedPipelineMode.getId());
+
                 if (getActivity() instanceof MainActivity) {
-                    ((MainActivity) getActivity()).startProduction(prompt, style, targetEngine, refUrisStrList);
+                    ((MainActivity) getActivity()).startProduction(
+                            prompt,
+                            style,
+                            targetEngine,
+                            selectedPipelineMode.getId(),
+                            refUrisStrList
+                    );
                 }
             });
         }
@@ -327,8 +364,14 @@ public class CreateFragment extends Fragment {
         adapterTarget.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinnerTarget.setAdapter(adapterTarget);
 
-        String[] modes = new String[]{"Fully Autonomous AI", "Step-by-step Interactive", "Fast Draft Mode"};
-        ArrayAdapter<String> adapterMode = new ArrayAdapter<>(getContext(), android.R.layout.simple_spinner_item, modes);
+        // Populate directly from the 4 AIPipelineMode enum constants
+        AIPipelineMode[] modes = AIPipelineMode.values();
+        String[] modeDisplayNames = new String[modes.length];
+        for (int i = 0; i < modes.length; i++) {
+            modeDisplayNames[i] = modes[i].getDisplayName();
+        }
+
+        ArrayAdapter<String> adapterMode = new ArrayAdapter<>(getContext(), android.R.layout.simple_spinner_item, modeDisplayNames);
         adapterMode.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinnerAutoMode.setAdapter(adapterMode);
     }
