@@ -263,8 +263,10 @@ public class AIOrchestrator {
 
         sysInstBuilder.append("3. Use modifiers where appropriate (Bevel, Subdivision Surface, Mirror, Solidify, Boolean, Shrinkwrap).\n");
         sysInstBuilder.append("4. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
+        sysInstBuilder.append("   In ShaderNodeBackground, the output socket is named 'Background' (bg.outputs['Background']), NEVER 'Color'.\n");
         sysInstBuilder.append("5. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
         sysInstBuilder.append("   NEVER set `scene.view_settings.look = 'High Contrast'`. ALWAYS write: `scene.view_settings.look = 'AgX - High Contrast'`.\n");
+        sysInstBuilder.append("   NEVER assign `scene.sequencer_colorspace_settings` (it is read-only). Set exposure via `scene.view_settings.exposure`, NEVER `scene.exposure`.\n");
         sysInstBuilder.append("6. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"`.\n");
         sysInstBuilder.append("7. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
         sysInstBuilder.append("8. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
@@ -452,8 +454,21 @@ public class AIOrchestrator {
         code = code.replace("['Transmission'].default_value", "['Transmission Weight'].default_value");
         code = code.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value");
         code = code.replace("['Specular'].default_value", "['Specular IOR Level'].default_value");
+        code = code.replaceAll("inputs\\[['\"]Transmission['\"]\\]", "inputs['Transmission Weight']");
+        code = code.replaceAll("inputs\\[['\"]Subsurface['\"]\\]", "inputs['Subsurface Weight']");
+        code = code.replaceAll("inputs\\[['\"]Specular['\"]\\]", "inputs['Specular IOR Level']");
 
-        // 5. Auto-sanitize Blender 4.2+ AgX color look enums
+        // 5. Auto-sanitize Background shader node output socket ('Color' -> 'Background')
+        code = code.replaceAll("(\\.outputs\\[['\"])Color(['\"]\\]\\s*,\\s*[^,\\n]*?inputs\\[['\"])Surface(['\"]\\])", "$1Background$2Surface$3");
+        code = code.replaceAll("(bg(?:_node)?\\.outputs\\[['\"])Color(['\"]\\])", "$1Background$2");
+
+        // 6. Auto-sanitize scene exposure path: scene.exposure -> scene.view_settings.exposure
+        code = code.replaceAll("(\\bscene)\\.exposure\\b", "$1.view_settings.exposure");
+
+        // 7. Auto-sanitize read-only sequencer_colorspace_settings assignment
+        code = code.replaceAll("(?m)^[ \\t]*.*?\\.sequencer_colorspace_settings\\s*=.*$", "pass");
+
+        // 8. Auto-sanitize Blender 4.2+ AgX color look enums
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'");
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'");
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'");
