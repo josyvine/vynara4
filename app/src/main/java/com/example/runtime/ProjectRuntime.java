@@ -128,16 +128,20 @@ public class ProjectRuntime {
 
         boolean success = false;
 
-        // Path 1: If file path exists on disk, attempt direct mesh import
+        // Path 1: If file path exists on disk, attempt direct GLB/GLTF parsing
         if (filePath != null && !filePath.trim().isEmpty()) {
             File diskFile = new File(filePath);
             if (diskFile.exists() && diskFile.length() > 0) {
                 if ("GLB".equals(format) || "GLTF".equals(format)) {
                     try {
-                        GLTFImporter importer = new GLTFImporter();
-                        SceneObject importedNode = importer.importFromFile(diskFile);
-                        if (importedNode != null) {
-                            engine.getSceneManager().getActiveScene().addObject(importedNode);
+                        GLTFImporter.ImportResult result = GLTFImporter.loadFromFile(diskFile);
+                        if (result != null && !result.isEmpty()) {
+                            for (SceneObject obj : result.getSceneObjects()) {
+                                engine.getSceneManager().getActiveScene().addObject(obj);
+                            }
+                            for (Character c : result.getCharacters()) {
+                                characterManager.registerCharacter(c);
+                            }
                             success = true;
                         }
                     } catch (Exception ex) {
@@ -153,11 +157,11 @@ public class ProjectRuntime {
                 // Instantiate vehicle chassis proxy with wheel placements in 3D viewport
                 SceneObject vehicleRoot = engine.createProceduralStructure("vehicle", asset.getName());
                 if (vehicleRoot == null) {
-                    vehicleRoot = engine.createPrimitive("box", 1.9f, 4.4f, 0.8f);
+                    vehicleRoot = engine.createPrimitive("cube", 1.9f, 4.4f, 0.8f);
                 }
                 success = vehicleRoot != null;
             } else if ("MESH".equals(category) || "OBJECTS".equals(category) || "OBJECT".equals(category)) {
-                SceneObject obj = engine.createPrimitive("box", 1.5f, 1.5f, 1.5f);
+                SceneObject obj = engine.createPrimitive("cube", 1.5f, 1.5f, 1.5f);
                 if (obj == null) {
                     obj = engine.createProceduralStructure(name, asset.getName());
                 }
@@ -177,7 +181,7 @@ public class ProjectRuntime {
                 success = c != null;
             } else {
                 // Fallback for any other arbitrary imported object
-                SceneObject fallbackObj = engine.createPrimitive("box", 1.5f, 1.5f, 1.5f);
+                SceneObject fallbackObj = engine.createPrimitive("cube", 1.5f, 1.5f, 1.5f);
                 success = fallbackObj != null;
             }
         }
