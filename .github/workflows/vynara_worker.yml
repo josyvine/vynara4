@@ -27,13 +27,13 @@ jobs:
           sudo mkdir -p /opt/blender
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
-      # Step 3: Install Virtual Display Server for OpenGL Desktop Parity
-      - name: Install Headless Display Server (Xvfb)
+      # Step 3: Install Virtual Display Server and Media Libraries
+      - name: Install Headless Display Server (Xvfb) and FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y xvfb ffmpeg libsm6 libxext6 libgl1
 
-      # Step 4: Execute Blender Python Script with Auto-Repair & Production Cycles Snapshot
+      # Step 4: Execute Blender Python Script with Auto-Repair, Input Model Ingestion & Motion Blur
       - name: Execute Blender Python Script
         env:
           BPY_SCRIPT: ${{ github.event.client_payload.bpy_script }}
@@ -61,6 +61,16 @@ jobs:
                       event_data = json.load(ef)
                       payload = event_data.get('client_payload', {})
                       
+                      # Support unpacked user 3D models passed in payload
+                      input_model_b64 = payload.get('input_model_b64', '')
+                      if input_model_b64 and input_model_b64.strip():
+                          try:
+                              with open('input_model.glb', 'wb') as mf:
+                                  mf.write(base64.b64decode(input_model_b64))
+                              print("Successfully unpacked user input 3D model: input_model.glb")
+                          except Exception as me:
+                              print(f"Warning unpacking user model: {me}")
+
                       # Support uploaded custom scripts and dynamic payloads via Base64
                       if 'bpy_script_b64' in payload and payload['bpy_script_b64'].strip():
                           bpy_script = base64.b64decode(payload['bpy_script_b64']).decode('utf-8', errors='ignore')
@@ -236,9 +246,21 @@ jobs:
             fi
           fi
 
+          # Normalize any rendered .mp4 to cinematic.mp4
+          if [ ! -f output/cinematic.mp4 ]; then
+            FIRST_MP4=$(ls output/*.mp4 2>/dev/null | head -n 1)
+            if [ -n "$FIRST_MP4" ]; then
+              cp "$FIRST_MP4" output/cinematic.mp4
+              echo "Normalized $FIRST_MP4 -> output/cinematic.mp4"
+            fi
+          fi
+
           # Verify output assets
           if [ -f output/model.glb ]; then
-            echo "SUCCESS: model.glb and render.png generated successfully."
+            echo "SUCCESS: model.glb generated successfully."
+            if [ -f output/cinematic.mp4 ]; then
+              echo "SUCCESS: cinematic.mp4 video generated successfully ($(stat -c%s output/cinematic.mp4) bytes)."
+            fi
             exit 0
           else
             if [ ! -f output/error.txt ]; then
@@ -248,7 +270,7 @@ jobs:
             exit 1
           fi
 
-      # Step 5: Upload both GLB model, Cycles render, and execution logs (Runs even if build failed)
+      # Step 5: Upload both GLB model, Cycles render, Cinematic MP4 video, and execution logs
       - name: Upload Finished Model and Render Preview
         if: always()
         uses: actions/upload-artifact@v4
