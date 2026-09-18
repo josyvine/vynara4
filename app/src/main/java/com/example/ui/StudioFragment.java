@@ -33,7 +33,9 @@ import com.example.utils.VynaraLogger;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class StudioFragment extends Fragment {
 
@@ -189,6 +191,15 @@ public class StudioFragment extends Fragment {
             });
         }
 
+        // Magnifying glass tool icon: Focus and re-center camera on 3D subject
+        View btnZoom = view.findViewById(R.id.btn_tool_zoom);
+        if (btnZoom != null) {
+            btnZoom.setOnClickListener(v -> {
+                autoFrameHeroOrScene();
+                Toast.makeText(getContext(), "Camera centered on 3D subject", Toast.LENGTH_SHORT).show();
+            });
+        }
+
         View btnHierarchy = view.findViewById(R.id.btn_tool_hierarchy);
         if (btnHierarchy != null) {
             btnHierarchy.setOnClickListener(v -> {
@@ -285,12 +296,19 @@ public class StudioFragment extends Fragment {
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
                 float scaleFactor = detector.getScaleFactor();
+                if (Float.isNaN(scaleFactor) || Float.isInfinite(scaleFactor)) return false;
+
                 if (engine != null && engine.getCameraManager() != null) {
                     Camera camera = engine.getCameraManager().getActiveCamera();
                     if (camera != null) {
                         camera.zoom(scaleFactor);
                     }
                 }
+                return true;
+            }
+
+            @Override
+            public boolean onScaleBegin(ScaleGestureDetector detector) {
                 return true;
             }
         });
@@ -378,6 +396,98 @@ public class StudioFragment extends Fragment {
                 return false;
             }
         });
+    }
+
+    /**
+     * Automatically frames the camera directly onto the primary 3D subject (e.g. Audi R8, vehicle, character),
+     * avoiding getting lost inside massive 200m background planes (highway, ocean, sky, atmospheric fog).
+     */
+    public void autoFrameHeroOrScene() {
+        if (engine == null || engine.getCameraManager() == null) return;
+        Camera cam = engine.getCameraManager().getActiveCamera();
+        if (cam == null) return;
+
+        Scene activeScene = engine.getSceneManager().getActiveScene();
+        if (activeScene == null || activeScene.getObjects().isEmpty()) {
+            cam.reset();
+            return;
+        }
+
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY, minZ = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
+        boolean foundHero = false;
+
+        List<SceneObject> flatList;
+        synchronized (activeScene) {
+            flatList = new ArrayList<>(activeScene.getFlatObjectList());
+        }
+
+        // Pass 1: Prioritize the hero vehicle/character/subject meshes
+        for (SceneObject obj : flatList) {
+            if (obj == null || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
+            String name = obj.getName() != null ? obj.getName().toLowerCase(Locale.US) : "";
+
+            boolean isBackground = name.contains("road") || name.contains("highway") 
+                    || name.contains("ocean") || name.contains("water") 
+                    || name.contains("fog") || name.contains("sky") 
+                    || name.contains("plane") || name.contains("ground")
+                    || name.contains("barrier");
+
+            if (!isBackground) {
+                float[] verts = obj.getMesh().getVertices();
+                if (verts.length > 0) {
+                    float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
+                    float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
+                    float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+
+                    for (int v = 0; v < verts.length; v += 3) {
+                        float vx = px + verts[v];
+                        float vy = py + verts[v + 1];
+                        float vz = pz + verts[v + 2];
+                        if (vx < minX) minX = vx;
+                        if (vy < minY) minY = vy;
+                        if (vz < minZ) minZ = vz;
+                        if (vx > maxX) maxX = vx;
+                        if (vy > maxY) maxY = vy;
+                        if (vz > maxZ) maxZ = vz;
+                        foundHero = true;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Fallback across all geometry if no dedicated hero node detected
+        if (!foundHero) {
+            for (SceneObject obj : flatList) {
+                if (obj == null || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
+                float[] verts = obj.getMesh().getVertices();
+                if (verts.length > 0) {
+                    float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
+                    float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
+                    float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+
+                    for (int v = 0; v < verts.length; v += 3) {
+                        float vx = px + verts[v];
+                        float vy = py + verts[v + 1];
+                        float vz = pz + verts[v + 2];
+                        if (vx < minX) minX = vx;
+                        if (vy < minY) minY = vy;
+                        if (vz < minZ) minZ = vz;
+                        if (vx > maxX) maxX = vx;
+                        if (vy > maxY) maxY = vy;
+                        if (vz > maxZ) maxZ = vz;
+                        foundHero = true;
+                    }
+                }
+            }
+        }
+
+        if (foundHero && !Float.isInfinite(minX) && !Float.isInfinite(maxX)) {
+            cam.frameBounds(new float[]{minX, minY, minZ}, new float[]{maxX, maxY, maxZ});
+        } else {
+            cam.setTarget(0f, 1f, 0f);
+            cam.setEye(0f, 4f, 8f);
+        }
     }
 
     /**
@@ -469,16 +579,8 @@ public class StudioFragment extends Fragment {
 
             engine.getSceneManager().updateWorldTransforms();
 
-            // Auto-frame camera on newly imported model
-            if (!result.getSceneObjects().isEmpty() && engine.getCameraManager() != null) {
-                SceneObject first = result.getSceneObjects().get(0);
-                if (first != null && first.getTransform() != null) {
-                    Camera cam = engine.getCameraManager().getActiveCamera();
-                    if (cam != null) {
-                        cam.setTarget(first.getTransform().getPx(), first.getTransform().getPy() + 1.0f, first.getTransform().getPz());
-                    }
-                }
-            }
+            // Auto-frame camera directly on the primary vehicle subject
+            autoFrameHeroOrScene();
 
             // Check if accompanying Cycles render still image exists
             currentRenderImageFile = GitHubWorkflowBridge.getAssociatedRenderImage(glbFile);
