@@ -5,6 +5,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
 
+import com.example.asset.Asset;
+import com.example.runtime.ProjectRuntime;
 import com.example.utils.VynaraLogger;
 
 import org.json.JSONArray;
@@ -145,7 +147,7 @@ public class GitHubWorkflowBridge {
     }
 
     /**
-     * Dispatches generation workflow with optional base64 input model payload.
+     * Dispatches generation workflow with optional input model payload.
      */
     public void dispatchGenerationWorkflowWithModel(Context context,
                                                     String repository,
@@ -260,6 +262,10 @@ public class GitHubWorkflowBridge {
         dispatchGenerationWorkflowWithModel(repository, personalAccessToken, eventType, assetId, bpyScript, null, callback);
     }
 
+    /**
+     * Dispatches generation workflow. If an imported 3D model file exists (or is actively selected),
+     * it uploads the file to the repository via the GitHub Contents API before dispatching.
+     */
     public void dispatchGenerationWorkflowWithModel(String repository,
                                                     String personalAccessToken,
                                                     String eventType,
@@ -272,6 +278,154 @@ public class GitHubWorkflowBridge {
             return;
         }
 
+        // Check if an imported 3D model is active in ProjectRuntime if not passed explicitly
+        if (inputModelFile == null || !inputModelFile.exists()) {
+            try {
+                ProjectRuntime runtime = ProjectRuntime.getInstance();
+                if (runtime != null) {
+                    Asset activeAsset = runtime.getActiveSelectedAsset();
+                    if (activeAsset != null && activeAsset.getFilePath() != null) {
+                        File candidateFile = new File(activeAsset.getFilePath());
+                        if (candidateFile.exists() && candidateFile.length() > 0) {
+                            inputModelFile = candidateFile;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // If an imported 3D model exists on disk, upload to repository first
+        if (inputModelFile != null && inputModelFile.exists() && inputModelFile.length() > 0) {
+            uploadModelAndDispatch(repository, personalAccessToken, eventType, assetId, bpyScript, inputModelFile, callback);
+        } else {
+            // Normal fast dispatch for text prompts or custom scripts
+            executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, null, callback);
+        }
+    }
+
+    /**
+     * Uploads the imported 3D model to the repository at inputs/input_model.<ext>
+     * so that GitHub Actions runner has the physical file ready when Blender starts.
+     */
+    private void uploadModelAndDispatch(String repository,
+                                        String personalAccessToken,
+                                        String eventType,
+                                        String assetId,
+                                        String bpyScript,
+                                        File modelFile,
+                                        WorkflowDispatchCallback callback) {
+        String ext = ".glb";
+        String origName = modelFile.getName().toLowerCase(Locale.US);
+        if (origName.endsWith(".fbx")) ext = ".fbx";
+        else if (origName.endsWith(".obj")) ext = ".obj";
+        else if (origName.endsWith(".gltf")) ext = ".gltf";
+
+        final String targetPath = "inputs/input_model" + ext;
+        final String contentsUrl = "https://api.github.com/repos/" + repository.trim() + "/contents/" + targetPath;
+
+        VynaraLogger.system("GitHubWorkflowBridge: Uploading 3D asset (" + modelFile.length() + " bytes) to repository: " + targetPath);
+
+        // Step 1: Query existing SHA (to allow overwriting existing input file)
+        Request getShaReq = new Request.Builder()
+                .url(contentsUrl)
+                .header("Authorization", "Bearer " + personalAccessToken.trim())
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Vynara-3D-Studio-Android")
+                .get()
+                .build();
+
+        httpClient.newCall(getShaReq).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                // If SHA lookup fails, attempt upload without SHA
+                performPutModel(repository, personalAccessToken, eventType, assetId, bpyScript, modelFile, targetPath, null, callback);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                String existingSha = null;
+                if (response.isSuccessful() && response.body() != null) {
+                    try {
+                        JSONObject obj = new JSONObject(response.body().string());
+                        existingSha = obj.optString("sha", null);
+                    } catch (Exception ignored) {}
+                }
+                response.close();
+                performPutModel(repository, personalAccessToken, eventType, assetId, bpyScript, modelFile, targetPath, existingSha, callback);
+            }
+        });
+    }
+
+    private void performPutModel(String repository,
+                                 String personalAccessToken,
+                                 String eventType,
+                                 String assetId,
+                                 String bpyScript,
+                                 File modelFile,
+                                 String targetPath,
+                                 String existingSha,
+                                 WorkflowDispatchCallback callback) {
+        try {
+            byte[] fileBytes = new byte[(int) modelFile.length()];
+            try (FileInputStream fis = new FileInputStream(modelFile)) {
+                int read = fis.read(fileBytes);
+                if (read <= 0) throw new IOException("Empty model file");
+            }
+
+            String b64Content = Base64.encodeToString(fileBytes, Base64.NO_WRAP);
+
+            JSONObject putPayload = new JSONObject();
+            putPayload.put("message", "Upload 3D model for autonomous render [Asset: " + assetId + "]");
+            putPayload.put("content", b64Content);
+            if (existingSha != null && !existingSha.isEmpty()) {
+                putPayload.put("sha", existingSha);
+            }
+
+            String putUrl = "https://api.github.com/repos/" + repository.trim() + "/contents/" + targetPath;
+            RequestBody body = RequestBody.create(putPayload.toString(), JSON_MEDIA_TYPE);
+
+            Request putReq = new Request.Builder()
+                    .url(putUrl)
+                    .header("Authorization", "Bearer " + personalAccessToken.trim())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Vynara-3D-Studio-Android")
+                    .put(body)
+                    .build();
+
+            httpClient.newCall(putReq).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    VynaraLogger.e("GitHubWorkflowBridge: Model file upload failed: " + e.getMessage());
+                    executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) {
+                    try {
+                        if (response.isSuccessful() || response.code() == 200 || response.code() == 201) {
+                            VynaraLogger.system("GitHubWorkflowBridge: Successfully uploaded 3D model to repository (" + targetPath + ")");
+                        } else {
+                            VynaraLogger.w("GitHubWorkflowBridge: Model upload returned HTTP " + response.code() + ", proceeding with dispatch");
+                        }
+                    } finally {
+                        response.close();
+                    }
+                    executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
+                }
+            });
+        } catch (Exception ex) {
+            VynaraLogger.e("GitHubWorkflowBridge: Error preparing model upload: " + ex.getMessage(), ex);
+            executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, null, callback);
+        }
+    }
+
+    private void executeDispatchCall(String repository,
+                                     String personalAccessToken,
+                                     String eventType,
+                                     String assetId,
+                                     String bpyScript,
+                                     String uploadedModelPath,
+                                     WorkflowDispatchCallback callback) {
         String dispatchUrl = "https://api.github.com/repos/" + repository.trim() + "/dispatches";
 
         try {
@@ -287,15 +441,8 @@ public class GitHubWorkflowBridge {
                 clientPayload.put("bpy_script", safeScript);
             }
 
-            // If an imported model is present and small enough for GitHub's 65KB payload limit
-            if (inputModelFile != null && inputModelFile.exists() && inputModelFile.length() < 45000) {
-                try (FileInputStream fis = new FileInputStream(inputModelFile)) {
-                    byte[] modelBytes = new byte[(int) inputModelFile.length()];
-                    fis.read(modelBytes);
-                    String b64Model = Base64.encodeToString(modelBytes, Base64.NO_WRAP);
-                    clientPayload.put("input_model_b64", b64Model);
-                    clientPayload.put("input_model_name", inputModelFile.getName());
-                } catch (Exception ignored) {}
+            if (uploadedModelPath != null && !uploadedModelPath.isEmpty()) {
+                clientPayload.put("model_path", uploadedModelPath);
             }
 
             clientPayload.put("timestamp", System.currentTimeMillis());
