@@ -54,7 +54,7 @@ public class AIOrchestrator {
      */
     public static boolean isDemoPreset(String prompt) {
         if (prompt == null) return false;
-        String p = prompt.trim().toLowerCase();
+        String p = prompt.trim().toLowerCase(Locale.US);
         return p.contains("realistic modern villa with a swimming pool")
                 || p.contains("stylized rigged superhero character")
                 || p.contains("animated quadruped dog model")
@@ -88,7 +88,7 @@ public class AIOrchestrator {
         }
 
         final boolean isBlenderNative = request.getTargetEngine() != null && 
-                request.getTargetEngine().toLowerCase().contains("blender");
+                request.getTargetEngine().toLowerCase(Locale.US).contains("blender");
 
         VynaraLogger.system("AIOrchestrator: Initiating Phase 1 (Director Agent Specification)...");
 
@@ -96,9 +96,16 @@ public class AIOrchestrator {
         String modelFilePath = null;
         if (request.getReferenceImageUris() != null) {
             for (String uri : request.getReferenceImageUris()) {
-                if (uri != null && uri.startsWith("model:")) {
-                    modelFilePath = uri.substring(6);
-                    break;
+                if (uri != null) {
+                    if (uri.startsWith("model:")) {
+                        modelFilePath = uri.substring(6);
+                        break;
+                    }
+                    String lower = uri.toLowerCase(Locale.US);
+                    if (lower.endsWith(".fbx") || lower.endsWith(".glb") || lower.endsWith(".gltf") || lower.endsWith(".obj")) {
+                        modelFilePath = uri.startsWith("file://") ? uri.substring(7) : uri;
+                        break;
+                    }
                 }
             }
         }
@@ -222,24 +229,30 @@ public class AIOrchestrator {
 
         StringBuilder sysInstBuilder = new StringBuilder();
         sysInstBuilder.append("You are an expert 3D technical director and rigging engineer using Blender's Python API (`bpy`).\n");
-        sysInstBuilder.append("Generate production-grade, error-free Python code for Blender 4.x/5.x.\n");
+        sysInstBuilder.append("Generate production-grade, error-free Python code for Blender 4.2+.\n");
         sysInstBuilder.append("CRITICAL SYNTAX & OPERATOR RULES:\n");
         sysInstBuilder.append("1. Output ONLY executable Python code inside a single ```python code block. No explanations outside the block.\n");
 
         if (hasImportedModel) {
             sysInstBuilder.append("2. CRITICAL - USER IMPORTED 3D ASSET DETECTED:\n");
-            sysInstBuilder.append("   - The user has already provided the primary 3D model. It is available in the workspace as 'inputs/input_model").append(modelExt).append("' (or 'input_model").append(modelExt).append("').\n");
-            sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists in the file!\n");
-            sysInstBuilder.append("   - STEP 1: Import the user's model using the correct operator:\n");
+            sysInstBuilder.append("   - The user has already provided the primary 3D model. The runner auto-normalizes uploaded models into 'inputs/input_model.glb'.\n");
+            sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists!\n");
+            sysInstBuilder.append("   - STEP 1: Import the model using the following fault-tolerant import block:\n");
+            sysInstBuilder.append("     import os, bpy\n");
+            sysInstBuilder.append("     if os.path.exists('inputs/input_model.glb'):\n");
+            sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
+            sysInstBuilder.append("     elif os.path.exists('input_model.glb'):\n");
+            sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='input_model.glb')\n");
+            sysInstBuilder.append("     elif os.path.exists('inputs/input_model").append(modelExt).append("'):\n");
             if (".fbx".equals(modelExt)) {
-                sysInstBuilder.append("     import_path = 'inputs/input_model.fbx' if os.path.exists('inputs/input_model.fbx') else 'input_model.fbx'\n");
-                sysInstBuilder.append("     bpy.ops.import_scene.fbx(filepath=import_path)\n");
+                sysInstBuilder.append("         try:\n");
+                sysInstBuilder.append("             bpy.ops.import_scene.fbx(filepath='inputs/input_model.fbx')\n");
+                sysInstBuilder.append("         except Exception as fe:\n");
+                sysInstBuilder.append("             print(f'FBX import note: {fe}')\n");
             } else if (".obj".equals(modelExt)) {
-                sysInstBuilder.append("     import_path = 'inputs/input_model.obj' if os.path.exists('inputs/input_model.obj') else 'input_model.obj'\n");
-                sysInstBuilder.append("     bpy.ops.wm.obj_import(filepath=import_path)\n");
+                sysInstBuilder.append("         bpy.ops.wm.obj_import(filepath='inputs/input_model.obj')\n");
             } else {
-                sysInstBuilder.append("     import_path = 'inputs/input_model.glb' if os.path.exists('inputs/input_model.glb') else 'input_model.glb'\n");
-                sysInstBuilder.append("     bpy.ops.import_scene.gltf(filepath=import_path)\n");
+                sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
             sysInstBuilder.append("   - STEP 2: Inspect `bpy.context.selected_objects` to reference the imported root and sub-assemblies.\n");
             sysInstBuilder.append("   - STEP 3: Script ONLY the surrounding environment (terrain, road, sky, props), movement/animation paths, parenting, lighting, and camera tracking around this imported model.\n");
@@ -249,20 +262,22 @@ public class AIOrchestrator {
         }
 
         sysInstBuilder.append("3. Use modifiers where appropriate (Bevel, Subdivision Surface, Mirror, Solidify, Boolean, Shrinkwrap).\n");
-        sysInstBuilder.append("4. Create Principled BSDF materials with realistic Base Color, Metallic, Roughness, and Transmission according to the Director Spec.\n");
-        sysInstBuilder.append("5. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"` or use string concatenation.\n");
-        sysInstBuilder.append("6. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
-        sysInstBuilder.append("7. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
-        sysInstBuilder.append("8. Do not include GUI/context-dependent operators that fail in headless mode.\n");
-        sysInstBuilder.append("9. Organize objects cleanly with descriptive names and parent them logically.");
+        sysInstBuilder.append("4. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
+        sysInstBuilder.append("5. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
+        sysInstBuilder.append("   NEVER set `scene.view_settings.look = 'High Contrast'`. ALWAYS write: `scene.view_settings.look = 'AgX - High Contrast'`.\n");
+        sysInstBuilder.append("6. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"`.\n");
+        sysInstBuilder.append("7. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
+        sysInstBuilder.append("8. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
+        sysInstBuilder.append("9. Do not include GUI/context-dependent operators that fail in headless mode.\n");
+        sysInstBuilder.append("10. Organize objects cleanly with descriptive names and parent them logically.");
 
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
         promptBuilder.append("STYLE: ").append(style).append("\n");
         if (hasImportedModel) {
             promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model (format: ").append(modelExt.toUpperCase(Locale.ROOT))
-                         .append(") is provided at 'inputs/input_model").append(modelExt).append("'. ")
-                         .append("Import it directly and direct the scene/animation/camera around it. Do not sculpt a replacement subject from cubes!\n");
+                         .append(") is normalized in the workspace as 'inputs/input_model.glb'. ")
+                         .append("Import it directly using GLTF/GLB import and direct the scene/animation/camera around it. Do not sculpt a replacement subject from cubes!\n");
         }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
@@ -304,7 +319,7 @@ public class AIOrchestrator {
 
     /**
      * Phase 3: Wraps Gemini's dynamic modeling script with headless scene initialization,
-     * cinematic camera/lighting, CPU-safe Cycles settings, and standardized GLB export.
+     * cinematic camera/lighting, CPU-safe Cycles settings, AgX color management, and standardized GLB export.
      */
     private String wrapDynamicScriptWithSafety(String dynamicCode, AIDirectorSpec spec, String importedModelPath) {
         StringBuilder sb = new StringBuilder();
@@ -359,6 +374,12 @@ public class AIOrchestrator {
         sb.append("    bpy.context.collection.objects.link(sun_obj)\n");
         sb.append("    sun_obj.rotation_euler = (math.radians(45), math.radians(15), math.radians(-30))\n");
         sb.append("except Exception as le: print(f'Lighting setup note: {le}')\n\n");
+
+        sb.append("# --- COLOR MANAGEMENT (BLENDER 4.2+ AGX) ---\n");
+        sb.append("try:\n");
+        sb.append("    bpy.context.scene.view_settings.view_transform = 'AgX'\n");
+        sb.append("    bpy.context.scene.view_settings.look = 'AgX - High Contrast'\n");
+        sb.append("except Exception as ve: print(f'Color management note: {ve}')\n\n");
 
         if (spec != null && spec.isUseVolumetrics()) {
             sb.append("try:\n");
@@ -426,6 +447,21 @@ public class AIOrchestrator {
         code = code.replace(".primitive_cylinder_create(", ".primitive_cylinder_add(");
         code = code.replace(".primitive_cone_create(", ".primitive_cone_add(");
         code = code.replace(".primitive_uv_sphere_create(", ".primitive_uv_sphere_add(");
+
+        // 4. Auto-sanitize Blender 4.2+ Principled BSDF socket changes
+        code = code.replace("['Transmission'].default_value", "['Transmission Weight'].default_value");
+        code = code.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value");
+        code = code.replace("['Specular'].default_value", "['Specular IOR Level'].default_value");
+
+        // 5. Auto-sanitize Blender 4.2+ AgX color look enums
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium Low Contrast['\"]", "view_settings.look = 'AgX - Medium Low Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Low Contrast['\"]", "view_settings.look = 'AgX - Low Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very Low Contrast['\"]", "view_settings.look = 'AgX - Very Low Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Base Contrast['\"]", "view_settings.look = 'AgX - Base Contrast'");
+        code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Punchy['\"]", "view_settings.look = 'AgX - Punchy'");
 
         return code.trim();
     }
