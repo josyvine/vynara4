@@ -13,6 +13,7 @@ import org.json.JSONObject;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -44,6 +45,7 @@ public class GitHubWorkflowBridge {
     private static volatile String sLastBlenderError = null;
     private static volatile String sLastBlenderTraceback = null;
     private static volatile File sLastRenderImage = null;
+    private static volatile File sLastRenderVideo = null;
 
     private final OkHttpClient httpClient;
     private final Handler mainHandler;
@@ -65,6 +67,9 @@ public class GitHubWorkflowBridge {
 
         // Multimodal Visual Feedback Hook: Invoked when Cycles preview render is extracted
         default void onRenderPreviewReady(File renderPreviewFile) {}
+
+        // Cinematic Video Output Hook: Invoked when motion-blurred MP4 video is extracted
+        default void onVideoReady(File videoFile) {}
     }
 
     public interface ConnectionTestCallback {
@@ -85,6 +90,9 @@ public class GitHubWorkflowBridge {
 
         // Multimodal Visual Feedback Hook: Invoked when Cycles preview render is extracted
         default void onRenderPreviewReady(File renderPreviewFile) {}
+
+        // Cinematic Video Output Hook: Invoked when motion-blurred MP4 video is extracted
+        default void onVideoReady(File videoFile) {}
     }
 
     public GitHubWorkflowBridge() {
@@ -108,10 +116,15 @@ public class GitHubWorkflowBridge {
         return sLastRenderImage;
     }
 
+    public static File getLatestRenderVideo() {
+        return sLastRenderVideo;
+    }
+
     public static void clearLastBlenderError() {
         sLastBlenderError = null;
         sLastBlenderTraceback = null;
         sLastRenderImage = null;
+        sLastRenderVideo = null;
     }
 
     // --- Overloaded Context-Aware Methods (Auto-fetch Stored Token) ---
@@ -129,6 +142,20 @@ public class GitHubWorkflowBridge {
                                            WorkflowDispatchCallback callback) {
         String token = GitHubOAuthService.getAccessToken(context);
         dispatchGenerationWorkflow(repository, token, eventType, assetId, bpyScript, callback);
+    }
+
+    /**
+     * Dispatches generation workflow with optional base64 input model payload.
+     */
+    public void dispatchGenerationWorkflowWithModel(Context context,
+                                                    String repository,
+                                                    String eventType,
+                                                    String assetId,
+                                                    String bpyScript,
+                                                    File inputModelFile,
+                                                    WorkflowDispatchCallback callback) {
+        String token = GitHubOAuthService.getAccessToken(context);
+        dispatchGenerationWorkflowWithModel(repository, token, eventType, assetId, bpyScript, inputModelFile, callback);
     }
 
     /**
@@ -230,6 +257,16 @@ public class GitHubWorkflowBridge {
                                            String assetId,
                                            String bpyScript,
                                            WorkflowDispatchCallback callback) {
+        dispatchGenerationWorkflowWithModel(repository, personalAccessToken, eventType, assetId, bpyScript, null, callback);
+    }
+
+    public void dispatchGenerationWorkflowWithModel(String repository,
+                                                    String personalAccessToken,
+                                                    String eventType,
+                                                    String assetId,
+                                                    String bpyScript,
+                                                    File inputModelFile,
+                                                    WorkflowDispatchCallback callback) {
         if (repository == null || repository.trim().isEmpty() || personalAccessToken == null || personalAccessToken.trim().isEmpty()) {
             callback.onError("GitHub credentials are not properly configured.");
             return;
@@ -248,6 +285,17 @@ public class GitHubWorkflowBridge {
                 clientPayload.put("bpy_script_b64", b64Script);
             } catch (Exception e) {
                 clientPayload.put("bpy_script", safeScript);
+            }
+
+            // If an imported model is present and small enough for GitHub's 65KB payload limit
+            if (inputModelFile != null && inputModelFile.exists() && inputModelFile.length() < 45000) {
+                try (FileInputStream fis = new FileInputStream(inputModelFile)) {
+                    byte[] modelBytes = new byte[(int) inputModelFile.length()];
+                    fis.read(modelBytes);
+                    String b64Model = Base64.encodeToString(modelBytes, Base64.NO_WRAP);
+                    clientPayload.put("input_model_b64", b64Model);
+                    clientPayload.put("input_model_name", inputModelFile.getName());
+                } catch (Exception ignored) {}
             }
 
             clientPayload.put("timestamp", System.currentTimeMillis());
@@ -475,7 +523,7 @@ public class GitHubWorkflowBridge {
                         String name = artifact.optString("name", "").toLowerCase(Locale.US);
                         if (name.equalsIgnoreCase(assetId) || name.contains(assetId.toLowerCase(Locale.US))
                                 || name.contains("model") || name.contains("error") || name.contains("log")
-                                || artifacts.length() == 1) {
+                                || name.contains("cinematic") || artifacts.length() == 1) {
                             downloadLocationUrl = artifact.optString("archive_download_url", null);
                             break;
                         }
@@ -636,12 +684,20 @@ public class GitHubWorkflowBridge {
                 if (sLastRenderImage != null) {
                     callback.onRenderPreviewReady(sLastRenderImage);
                 }
+                if (sLastRenderVideo != null) {
+                    callback.onVideoReady(sLastRenderVideo);
+                }
                 callback.onSuccess(downloadedFile);
             }
 
             @Override
             public void onRenderPreviewReady(File renderPreviewFile) {
                 callback.onRenderPreviewReady(renderPreviewFile);
+            }
+
+            @Override
+            public void onVideoReady(File videoFile) {
+                callback.onVideoReady(videoFile);
             }
 
             @Override
@@ -827,6 +883,9 @@ public class GitHubWorkflowBridge {
                         if (sLastRenderImage != null) {
                             callback.onRenderPreviewReady(sLastRenderImage);
                         }
+                        if (sLastRenderVideo != null) {
+                            callback.onVideoReady(sLastRenderVideo);
+                        }
                         mainHandler.post(() -> callback.onSuccess(destinationFile));
                     } else {
                         String failureDetails = (sLastBlenderTraceback != null && !sLastBlenderTraceback.isEmpty())
@@ -852,11 +911,12 @@ public class GitHubWorkflowBridge {
     }
 
     /**
-     * Extracts the 3D model (.glb), preview image (.png), and parses error.txt / blender_execution.log.
+     * Extracts the 3D model (.glb), preview image (.png), cinematic video (.mp4/.webm),
+     * and parses error.txt / blender_execution.log.
      */
     private boolean extractGlbFromZip(File zipFile, File destinationGlbFile) {
         boolean glbFound = false;
-        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new java.io.FileInputStream(zipFile)))) {
+        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
             ZipEntry entry;
             byte[] buffer = new byte[8192];
 
@@ -894,6 +954,25 @@ public class GitHubWorkflowBridge {
                         fos.flush();
                         sLastRenderImage = destinationImgFile;
                         VynaraLogger.system("GitHubWorkflowBridge: Extracted preview render: " + destinationImgFile.getName());
+                    }
+                } else if (fileName.endsWith(".mp4") || fileName.endsWith(".mov") || fileName.endsWith(".webm")) {
+                    String videoName = destinationGlbFile.getName();
+                    int dotIdx = videoName.lastIndexOf('.');
+                    String baseName = (dotIdx > 0) ? videoName.substring(0, dotIdx) : videoName;
+                    File destinationVideoFile = new File(destinationGlbFile.getParentFile(), baseName + ".mp4");
+
+                    if (destinationVideoFile.getParentFile() != null && !destinationVideoFile.getParentFile().exists()) {
+                        destinationVideoFile.getParentFile().mkdirs();
+                    }
+
+                    try (FileOutputStream fos = new FileOutputStream(destinationVideoFile)) {
+                        int len;
+                        while ((len = zis.read(buffer)) > 0) {
+                            fos.write(buffer, 0, len);
+                        }
+                        fos.flush();
+                        sLastRenderVideo = destinationVideoFile;
+                        VynaraLogger.system("GitHubWorkflowBridge: Extracted cinematic video: " + destinationVideoFile.getName());
                     }
                 } else if (fileName.contains("error.txt") || fileName.contains("blender_execution.log") || fileName.endsWith(".log") || fileName.contains("traceback")) {
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -978,5 +1057,14 @@ public class GitHubWorkflowBridge {
         String baseName = (dotIdx > 0) ? name.substring(0, dotIdx) : name;
         File img = new File(glbFile.getParentFile(), baseName + ".png");
         return (img.exists() && img.length() > 0) ? img : null;
+    }
+
+    public static File getAssociatedRenderVideo(File glbFile) {
+        if (glbFile == null || glbFile.getParentFile() == null) return null;
+        String name = glbFile.getName();
+        int dotIdx = name.lastIndexOf('.');
+        String baseName = (dotIdx > 0) ? name.substring(0, dotIdx) : name;
+        File vid = new File(glbFile.getParentFile(), baseName + ".mp4");
+        return (vid.exists() && vid.length() > 0) ? vid : null;
     }
 }
