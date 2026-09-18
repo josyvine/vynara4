@@ -9,6 +9,7 @@ import com.example.validation.validators.SceneValidator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class ValidationManager {
 
@@ -56,20 +57,43 @@ public class ValidationManager {
     /**
      * Phase 11 Alignment: Coordinates detailed mesh topology, bounding box, 
      * and PBR material parameter checks on individual scene graph nodes.
-     * Accurately distinguishes between geometry meshes and parent hierarchy/transform containers.
+     * Accurately distinguishes between geometry meshes and parent hierarchy/transform containers
+     * or standalone locator targets (e.g. Camera_Focus_Target).
      */
     public List<ValidationResult> validateObject(SceneObject obj) {
         List<ValidationResult> results = new ArrayList<>();
         if (obj == null) return results;
 
         boolean isTransformContainer = (obj.getChildren() != null && !obj.getChildren().isEmpty());
+        String nameLower = obj.getName() != null ? obj.getName().toLowerCase(Locale.US) : "";
+        String typeLower = obj.getType() != null ? obj.getType().toLowerCase(Locale.US) : "";
+
+        // Identify non-mesh nodes: parent transform containers, empties, locators, and camera/lighting focus anchors
+        boolean isNonMeshNode = isTransformContainer
+                || typeLower.equals("empty")
+                || typeLower.equals("locator")
+                || typeLower.equals("camera")
+                || typeLower.equals("light")
+                || typeLower.equals("container")
+                || typeLower.equals("group")
+                || nameLower.contains("target")
+                || nameLower.contains("focus")
+                || nameLower.contains("empty")
+                || nameLower.contains("locator")
+                || nameLower.contains("axis")
+                || nameLower.contains("cam")
+                || nameLower.contains("light")
+                || nameLower.contains("rig")
+                || nameLower.contains("root")
+                || nameLower.contains("null")
+                || nameLower.startsWith("empty_node_");
+
         Mesh mesh = obj.getMesh();
 
         // 1. Validate Mesh Topology & Vertex counts
         if (mesh == null) {
             // Only flag an error if this is a leaf node intended to render geometry.
-            // Empty parent/rig transform nodes (e.g. Car_Rig, CarRoot) host children and do not hold mesh buffers directly.
-            if (!isTransformContainer) {
+            if (!isNonMeshNode) {
                 results.add(new ValidationResult(
                     ValidationResult.Severity.ERROR,
                     "Object " + obj.getName() + " has missing 3D mesh.",
@@ -81,7 +105,7 @@ public class ValidationManager {
         }
 
         // 2. Validate Material Shading parameters
-        // Transform containers without geometry meshes do not require material assignment.
+        // Non-mesh nodes (transform containers and empty targets) do not require materials.
         if (mesh != null) {
             if (obj.getMaterial() == null) {
                 results.add(new ValidationResult(
