@@ -166,7 +166,7 @@ public class BlenderWorkerAgent {
     /**
      * Dynamically builds Worker 1 (Structure) using real procedural shaping, subdivision,
      * and boolean carving, or loads an uploaded 3D asset (.fbx, .glb, .obj, .gltf)
-     * if present in the worker environment.
+     * prioritizing normalized GLB to prevent ASCII FBX runtime rejections.
      */
     private static String buildWorker1StructureScript(String promptOrCode, AIDirectorSpec spec) {
         if (promptOrCode == null) return "";
@@ -200,40 +200,48 @@ public class BlenderWorkerAgent {
         sb.append("    bsdf_b.inputs['Roughness'].default_value = 0.05\n");
         sb.append("    bsdf_b.inputs['Metallic'].default_value = 0.9\n\n");
 
-        // Check for user-uploaded 3D model (FBX, GLB, GLTF, OBJ)
-        sb.append("# Check for user imported asset model in workspace\n");
+        // Check for user-uploaded 3D model (checking inputs/ and workspace, prioritizing normalized GLB)
+        sb.append("# Check for user imported asset model in workspace (prioritizing normalized GLB)\n");
         sb.append("imported_car = None\n");
-        sb.append("if os.path.exists('input_model.fbx'):\n");
-        sb.append("    print('Loading user-provided 3D FBX model: input_model.fbx...')\n");
-        sb.append("    bpy.ops.import_scene.fbx(filepath='input_model.fbx')\n");
-        sb.append("    for obj in bpy.context.selected_objects:\n");
-        sb.append("        if obj.type == 'MESH':\n");
-        sb.append("            obj_name = obj.name.lower()\n");
-        sb.append("            if 'wheel' in obj_name or 'tire' in obj_name or 'rim' in obj_name:\n");
-        sb.append("                pass\n");
-        sb.append("            elif 'body' in obj_name or 'chassis' in obj_name or imported_car is None:\n");
-        sb.append("                imported_car = obj\n");
-        sb.append("    if imported_car:\n");
-        sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
-        sb.append("elif os.path.exists('input_model.glb'):\n");
-        sb.append("    print('Loading user-provided 3D GLB model: input_model.glb...')\n");
-        sb.append("    bpy.ops.import_scene.gltf(filepath='input_model.glb')\n");
+        sb.append("glb_path = 'inputs/input_model.glb' if os.path.exists('inputs/input_model.glb') else ('input_model.glb' if os.path.exists('input_model.glb') else None)\n");
+        sb.append("fbx_path = 'inputs/input_model.fbx' if os.path.exists('inputs/input_model.fbx') else ('input_model.fbx' if os.path.exists('input_model.fbx') else None)\n");
+        sb.append("gltf_path = 'inputs/input_model.gltf' if os.path.exists('inputs/input_model.gltf') else ('input_model.gltf' if os.path.exists('input_model.gltf') else None)\n");
+        sb.append("obj_path = 'inputs/input_model.obj' if os.path.exists('inputs/input_model.obj') else ('input_model.obj' if os.path.exists('input_model.obj') else None)\n\n");
+
+        sb.append("if glb_path:\n");
+        sb.append("    print(f'Loading normalized 3D GLB model: {glb_path}...')\n");
+        sb.append("    bpy.ops.import_scene.gltf(filepath=glb_path)\n");
         sb.append("    for obj in bpy.context.selected_objects:\n");
         sb.append("        if obj.type == 'MESH' and ('body' in obj.name.lower() or 'chassis' in obj.name.lower() or imported_car is None):\n");
         sb.append("            imported_car = obj\n");
         sb.append("    if imported_car:\n");
         sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
-        sb.append("elif os.path.exists('input_model.gltf'):\n");
-        sb.append("    print('Loading user-provided 3D GLTF model: input_model.gltf...')\n");
-        sb.append("    bpy.ops.import_scene.gltf(filepath='input_model.gltf')\n");
+        sb.append("elif fbx_path:\n");
+        sb.append("    print(f'Loading user-provided 3D FBX model: {fbx_path}...')\n");
+        sb.append("    try:\n");
+        sb.append("        bpy.ops.import_scene.fbx(filepath=fbx_path)\n");
+        sb.append("        for obj in bpy.context.selected_objects:\n");
+        sb.append("            if obj.type == 'MESH':\n");
+        sb.append("                obj_name = obj.name.lower()\n");
+        sb.append("                if 'wheel' in obj_name or 'tire' in obj_name or 'rim' in obj_name:\n");
+        sb.append("                    pass\n");
+        sb.append("                elif 'body' in obj_name or 'chassis' in obj_name or imported_car is None:\n");
+        sb.append("                    imported_car = obj\n");
+        sb.append("        if imported_car:\n");
+        sb.append("            imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("    except Exception as fe:\n");
+        sb.append("        print(f'FBX import fallback notice: {fe}')\n");
+        sb.append("elif gltf_path:\n");
+        sb.append("    print(f'Loading user-provided 3D GLTF model: {gltf_path}...')\n");
+        sb.append("    bpy.ops.import_scene.gltf(filepath=gltf_path)\n");
         sb.append("    for obj in bpy.context.selected_objects:\n");
         sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
         sb.append("            imported_car = obj\n");
         sb.append("    if imported_car:\n");
         sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
-        sb.append("elif os.path.exists('input_model.obj'):\n");
-        sb.append("    print('Loading user-provided 3D OBJ model: input_model.obj...')\n");
-        sb.append("    bpy.ops.wm.obj_import(filepath='input_model.obj')\n");
+        sb.append("elif obj_path:\n");
+        sb.append("    print(f'Loading user-provided 3D OBJ model: {obj_path}...')\n");
+        sb.append("    bpy.ops.wm.obj_import(filepath=obj_path)\n");
         sb.append("    for obj in bpy.context.selected_objects:\n");
         sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
         sb.append("            imported_car = obj\n");
@@ -482,7 +490,8 @@ public class BlenderWorkerAgent {
 
     /**
      * Builds Worker 3: Cinematics, Low Ground-Clearance Tracking Camera,
-     * Golden-Hour Sun Lighting, 180-deg Optical Motion Blur, and MP4 Video Rendering.
+     * Golden-Hour Sun Lighting, 180-deg Optical Motion Blur, AgX Color Management,
+     * and MP4 Video Rendering.
      */
     private static String buildWorker3LightingAndRenderScript(AIDirectorSpec spec) {
         StringBuilder sb = new StringBuilder();
@@ -554,6 +563,13 @@ public class BlenderWorkerAgent {
         sb.append("# Optical Shutter Speed (180-deg Shutter = 0.5 frame blur)\n");
         sb.append("scene.render.use_motion_blur = True\n");
         sb.append("scene.render.motion_blur_shutter = 0.5\n\n");
+
+        // Blender 4.2+ AgX Color Management
+        sb.append("# Color Management (Blender 4.2+ AgX Standard)\n");
+        sb.append("try:\n");
+        sb.append("    scene.view_settings.view_transform = 'AgX'\n");
+        sb.append("    scene.view_settings.look = 'AgX - High Contrast'\n");
+        sb.append("except Exception as ve: print(f'Color management note: {ve}')\n\n");
 
         // Step 1: Export Interactive GLB
         sb.append("# Step 1: Export Interactive 3D GLTF/GLB\n");
