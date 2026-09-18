@@ -56,24 +56,42 @@ public class ValidationManager {
     /**
      * Phase 11 Alignment: Coordinates detailed mesh topology, bounding box, 
      * and PBR material parameter checks on individual scene graph nodes.
+     * Accurately distinguishes between geometry meshes and parent hierarchy/transform containers.
      */
     public List<ValidationResult> validateObject(SceneObject obj) {
         List<ValidationResult> results = new ArrayList<>();
         if (obj == null) return results;
 
-        // 1. Validate Mesh Topology & Vertex counts
+        boolean isTransformContainer = (obj.getChildren() != null && !obj.getChildren().isEmpty());
         Mesh mesh = obj.getMesh();
+
+        // 1. Validate Mesh Topology & Vertex counts
         if (mesh == null) {
-            results.add(new ValidationResult(ValidationResult.Severity.ERROR, "Object " + obj.getName() + " has missing 3D mesh.", "Call geometry generator to rebuild mesh."));
+            // Only flag an error if this is a leaf node intended to render geometry.
+            // Empty parent/rig transform nodes (e.g. Car_Rig, CarRoot) host children and do not hold mesh buffers directly.
+            if (!isTransformContainer) {
+                results.add(new ValidationResult(
+                    ValidationResult.Severity.ERROR,
+                    "Object " + obj.getName() + " has missing 3D mesh.",
+                    "Call geometry generator to rebuild mesh."
+                ));
+            }
         } else {
             results.addAll(meshValidator.validate(mesh, obj.getName()));
         }
 
         // 2. Validate Material Shading parameters
-        if (obj.getMaterial() == null) {
-            results.add(new ValidationResult(ValidationResult.Severity.WARNING, "Object " + obj.getName() + " has no material assigned.", "Assign default material properties."));
-        } else {
-            results.addAll(materialValidator.validate(obj.getMaterial(), obj.getName()));
+        // Transform containers without geometry meshes do not require material assignment.
+        if (mesh != null) {
+            if (obj.getMaterial() == null) {
+                results.add(new ValidationResult(
+                    ValidationResult.Severity.WARNING,
+                    "Object " + obj.getName() + " has no material assigned.",
+                    "Assign default material properties."
+                ));
+            } else {
+                results.addAll(materialValidator.validate(obj.getMaterial(), obj.getName()));
+            }
         }
 
         return results;
