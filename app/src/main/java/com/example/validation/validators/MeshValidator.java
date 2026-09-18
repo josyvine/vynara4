@@ -54,7 +54,7 @@ public class MeshValidator {
                     "Object " + name + " is missing normal vectors. Flat normals will be generated.",
                     "Invoke Mesh.recalculateNormals() to generate normals.",
                     null));
-        } else if (mesh.getNormals().length != mesh.getVertices().length) {
+        } else if (mesh.getVertices() != null && mesh.getNormals().length != mesh.getVertices().length) {
             results.add(new ValidationResult(
                     ValidationResult.Severity.ERROR,
                     ValidationResult.Category.MESH,
@@ -75,13 +75,16 @@ public class MeshValidator {
                         null));
             }
 
-            // Verify index out-of-bounds references to prevent GPU/Renderer pipeline crashes
+            // Verify index out-of-bounds references using unsigned 16-bit evaluation (& 0xFFFF).
+            // In OpenGL ES/glTF, indices are GL_UNSIGNED_SHORT (0 to 65535).
+            // Java's signed short produces negative values for indices between 32768 and 65535.
             for (int i = 0; i < indices.length; i++) {
-                if (indices[i] >= vertexCount || indices[i] < 0) {
+                int indexVal = indices[i] & 0xFFFF;
+                if (indexVal >= vertexCount) {
                     results.add(new ValidationResult(
                             ValidationResult.Severity.CRITICAL,
                             ValidationResult.Category.MESH,
-                            "Object " + name + " contains out-of-bounds vertex index reference (" + indices[i] + "). Max allowed is " + (vertexCount - 1),
+                            "Object " + name + " contains out-of-bounds vertex index reference (" + indexVal + "). Max allowed is " + (vertexCount - 1),
                             "Re-index vertices to resolve buffer overflow crashes.",
                             null));
                     break;
