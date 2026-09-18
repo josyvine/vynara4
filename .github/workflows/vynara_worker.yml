@@ -296,6 +296,21 @@ jobs:
           bpy_script = re.sub(r"inputs\[['\"]Subsurface['\"]\]", "inputs['Subsurface Weight']", bpy_script)
           bpy_script = re.sub(r"inputs\[['\"]Specular['\"]\]", "inputs['Specular IOR Level']", bpy_script)
 
+          # Auto-Repair 17: Fix hallucinated object.keyframe_[xyz] axis attribute assignments
+          axis_index_map = {'x': 0, 'y': 1, 'z': 2, 'X': 0, 'Y': 1, 'Z': 2}
+          def fix_keyframe_axis(m):
+              obj = m.group(1)
+              axis = m.group(2)
+              val = m.group(3).strip()
+              idx = axis_index_map.get(axis, 1)
+              return f"{obj}.location.{axis.lower()} = {val}; {obj}.keyframe_insert(data_path='location', index={idx})"
+          bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_([xyzXYZ])\s*=\s*([^\n;]+)", fix_keyframe_axis, bpy_script)
+
+          # Auto-Repair 18: Fix hallucinated object.keyframe_[location|rotation|scale] property assignments
+          bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_location\s*=\s*([^\n;]+)", r"\1.location = \2; \1.keyframe_insert(data_path='location')", bpy_script)
+          bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_rotation\s*=\s*([^\n;]+)", r"\1.rotation_euler = \2; \1.keyframe_insert(data_path='rotation_euler')", bpy_script)
+          bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_scale\s*=\s*([^\n;]+)", r"\1.scale = \2; \1.keyframe_insert(data_path='scale')", bpy_script)
+
           with open('run_task.py', 'w', encoding='utf-8') as f:
               f.write(bpy_script)
 
