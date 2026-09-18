@@ -243,17 +243,23 @@ public class AICorrector {
         return "You are an elite Blender Python (`bpy`) core engineer and debugger specializing in automated 3D asset generation.\n" +
                 "A cloud worker running headless Blender 4.2+ failed with a runtime exception or traceback while executing a script.\n" +
                 "Your objective is to fix the exact error identified in the traceback, preserve all 3D assets/materials from the code, and output the entire corrected script.\n\n" +
-                "CRITICAL REQUIREMENTS:\n" +
+                "CRITICAL REQUIREMENTS & KNOWLEDGE GATES:\n" +
                 "1. Output ONLY the fully corrected, executable Python script inside a single ```python ... ``` block. No conversational filler, greetings, or explanations.\n" +
                 "2. Read the error traceback carefully and fix the specific failing line, parameter, enum, or syntax.\n" +
-                "3. If the user prompt was omitted, rely on the script's code, structure, comments, and variable names to understand the 3D scene.\n" +
-                "4. API GUARDS:\n" +
-                "   - Mesh primitives must use `bpy.ops.mesh.primitive_..._add` (never create or raw call without add).\n" +
-                "   - Lights must use `bpy.ops.object.light_add(type=...)`. Valid types are strictly: ('POINT', 'SUN', 'SPOT', 'AREA'). Never use texture enums like 'CLOUDS' for lights!\n" +
+                "3. BLENDER 4.2+ COLOR MANAGEMENT ENUMS:\n" +
+                "   - Under the AgX view transform, the valid looks are strictly: 'None', 'AgX - Punchy', 'AgX - High Contrast', 'AgX - Medium High Contrast', 'AgX - Base Contrast', 'AgX - Low Contrast'.\n" +
+                "   - NEVER set `scene.view_settings.look = 'High Contrast'`. ALWAYS set `scene.view_settings.look = 'AgX - High Contrast'`.\n" +
+                "4. ASSET INGESTION & ASCII FBX LIMITATION:\n" +
+                "   - If the error states `ASCII FBX files are not supported`, DO NOT retry `bpy.ops.import_scene.fbx`!\n" +
+                "   - The worker environment auto-converts ASCII FBX files into GLB format at 'inputs/input_model.glb' (or 'input_model.glb').\n" +
+                "   - Replace the failing import call with: `bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')`.\n" +
+                "5. API GUARDS:\n" +
+                "   - Mesh primitives must use `bpy.ops.mesh.primitive_..._add` (never use `_create` or `bpy.ops.object.mesh.`).\n" +
+                "   - Lights must use `bpy.ops.object.light_add(type=...)`. Valid types: ('POINT', 'SUN', 'SPOT', 'AREA').\n" +
                 "   - Texture types in `bpy.data.textures.new(...)` MUST be one of: ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD').\n" +
                 "   - Principled BSDF socket names must conform to Blender 4.2+ ('Transmission Weight', 'Roughness', 'Metallic', 'Specular IOR Level').\n" +
                 "   - Ensure `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)` runs at the very end.\n" +
-                "5. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
+                "6. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
     }
 
     private String buildBlenderRepairUserPrompt(String userPrompt, String failedScript, String errorTraceback) {
@@ -264,12 +270,26 @@ public class AICorrector {
         StringBuilder sb = new StringBuilder();
         sb.append("=== WHAT WAS BEING BUILT (USER PROMPT / GOAL) ===\n")
           .append(safePrompt)
-          .append("\n\n")
-          .append("=== EXACT BLENDER TERMINAL ERROR / TRACEBACK (FROM error.txt) ===\n")
+          .append("\n\n");
+
+        sb.append("=== EXACT BLENDER TERMINAL ERROR / TRACEBACK (FROM error.txt) ===\n")
           .append(errorTraceback != null ? errorTraceback : "Unknown execution failure")
-          .append("\n\n")
-          .append("=== THE FAULTY SCRIPT THAT FAILED ===\n")
+          .append("\n\n");
+
+        if (errorTraceback != null) {
+            if (errorTraceback.contains("ASCII FBX")) {
+                sb.append("HEALING DIRECTIVE FOR ASCII FBX:\n")
+                  .append("- Replace `bpy.ops.import_scene.fbx(filepath='inputs/input_model.fbx')` with `bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')` (or 'input_model.glb').\n\n");
+            }
+            if (errorTraceback.contains("High Contrast")) {
+                sb.append("HEALING DIRECTIVE FOR COLOR LOOK:\n")
+                  .append("- Replace `scene.view_settings.look = 'High Contrast'` with `scene.view_settings.look = 'AgX - High Contrast'`.\n\n");
+            }
+        }
+
+        sb.append("=== THE FAULTY SCRIPT THAT FAILED ===\n")
           .append(failedScript != null ? failedScript : "# No script content");
+
         return sb.toString();
     }
 
@@ -299,7 +319,30 @@ public class AICorrector {
             }
         }
 
-        return cleaned;
+        // Auto-sanitize legacy color looks to Blender 4.2 AgX
+        cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'");
+        cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'");
+        cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'");
+
+        // Auto-sanitize unquoted f-strings
+        cleaned = cleaned.replaceAll("(?<=[=\\s,(])f([a-zA-Z0-9_]+\\{[^}\"\\n]+\\}[a-zA-Z0-9_]*)", "f\"$1\"");
+
+        // Auto-sanitize hallucinated mesh and light operators
+        cleaned = cleaned.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.");
+        cleaned = cleaned.replace("bpy.ops.light.add(", "bpy.ops.object.light_add(");
+        cleaned = cleaned.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(");
+        cleaned = cleaned.replace(".primitive_cube_create(", ".primitive_cube_add(");
+        cleaned = cleaned.replace(".primitive_plane_create(", ".primitive_plane_add(");
+        cleaned = cleaned.replace(".primitive_cylinder_create(", ".primitive_cylinder_add(");
+        cleaned = cleaned.replace(".primitive_cone_create(", ".primitive_cone_add(");
+        cleaned = cleaned.replace(".primitive_uv_sphere_create(", ".primitive_uv_sphere_add(");
+
+        // Auto-sanitize Blender 4.2+ Principled BSDF socket changes
+        cleaned = cleaned.replace("['Transmission'].default_value", "['Transmission Weight'].default_value");
+        cleaned = cleaned.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value");
+        cleaned = cleaned.replace("['Specular'].default_value", "['Specular IOR Level'].default_value");
+
+        return cleaned.trim();
     }
 
     private String encodeImageFileToBase64(File file) {
