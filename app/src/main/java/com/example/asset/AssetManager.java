@@ -1,6 +1,7 @@
 package com.example.asset;
 
 import android.content.Context;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -12,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
@@ -115,6 +117,137 @@ public class AssetManager {
 
     public void clearAssets() {
         assets.clear();
+    }
+
+    // ==========================================
+    // Local Ingestion & Storage Access
+    // ==========================================
+
+    /**
+     * Imports a user-selected 3D model directly from an Android content Uri into
+     * internal app storage, infers metadata, and registers it into the active catalog.
+     */
+    public Asset importAssetFromUri(Context context, Uri uri, String fileName) {
+        if (context == null || uri == null) {
+            VynaraLogger.e("AssetManager: Cannot import asset with null context or URI");
+            return null;
+        }
+
+        File cacheDir = new File(context.getFilesDir(), CACHE_SUBDIR);
+        if (!cacheDir.exists()) {
+            cacheDir.mkdirs();
+        }
+
+        String safeFileName = (fileName != null && !fileName.trim().isEmpty())
+                ? fileName.trim()
+                : "imported_" + System.currentTimeMillis() + ".glb";
+
+        // Prevent file collision
+        File destFile = new File(cacheDir, safeFileName);
+        if (destFile.exists()) {
+            String nameWithoutExt = safeFileName;
+            String ext = "";
+            int dotIdx = safeFileName.lastIndexOf('.');
+            if (dotIdx != -1) {
+                nameWithoutExt = safeFileName.substring(0, dotIdx);
+                ext = safeFileName.substring(dotIdx);
+            }
+            safeFileName = nameWithoutExt + "_" + System.currentTimeMillis() + ext;
+            destFile = new File(cacheDir, safeFileName);
+        }
+
+        try (InputStream is = context.getContentResolver().openInputStream(uri);
+             FileOutputStream fos = new FileOutputStream(destFile)) {
+
+            if (is == null) {
+                VynaraLogger.e("AssetManager: Failed to open input stream for URI: " + uri);
+                return null;
+            }
+
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = is.read(buffer)) != -1) {
+                fos.write(buffer, 0, read);
+            }
+            fos.flush();
+
+            VynaraLogger.system("AssetManager: Imported " + destFile.getName() + " (" + destFile.length() + " bytes)");
+
+            String id = "asset_" + System.currentTimeMillis();
+            String name = sanitizeDisplayName(safeFileName);
+            String category = inferCategory(safeFileName);
+            String format = inferFormat(safeFileName);
+            String fileSizeStr = formatFileSize(destFile.length());
+
+            Asset asset;
+            try {
+                asset = new Asset(id, name, category, format, fileSizeStr, destFile.getAbsolutePath(), 0);
+            } catch (Throwable t) {
+                // Fallback to 5-param constructor if version variations exist
+                asset = new Asset(id, name, category, format, destFile.getAbsolutePath());
+            }
+
+            addAsset(asset);
+            return asset;
+
+        } catch (Exception e) {
+            VynaraLogger.e("AssetManager: Error importing asset from URI: " + e.getMessage(), e);
+            if (destFile.exists()) {
+                destFile.delete();
+            }
+            return null;
+        }
+    }
+
+    private String sanitizeDisplayName(String fileName) {
+        String base = fileName;
+        int dot = base.lastIndexOf('.');
+        if (dot != -1) {
+            base = base.substring(0, dot);
+        }
+        return base.replace('_', ' ').replace('-', ' ').trim();
+    }
+
+    private String inferCategory(String fileName) {
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        if (lower.contains("car") || lower.contains("auto") || lower.contains("vehicle") ||
+            lower.contains("truck") || lower.contains("sedan") || lower.contains("coupe") ||
+            lower.contains("motor") || lower.contains("bmw") || lower.contains("audi")) {
+            return "Vehicle";
+        } else if (lower.contains("char") || lower.contains("hero") || lower.contains("biped") ||
+                   lower.contains("human") || lower.contains("person") || lower.contains("man") ||
+                   lower.contains("girl")) {
+            return "Character";
+        } else if (lower.contains("dog") || lower.contains("cat") || lower.contains("creature") ||
+                   lower.contains("animal") || lower.contains("monster")) {
+            return "Creature";
+        } else if (lower.contains("road") || lower.contains("street") || lower.contains("track") ||
+                   lower.contains("terrain") || lower.contains("ground") || lower.contains("tree") ||
+                   lower.contains("plant") || lower.contains("grass") || lower.contains("env")) {
+            return "Environment";
+        } else if (lower.contains("house") || lower.contains("building") || lower.contains("villa") ||
+                   lower.contains("tower") || lower.contains("bridge") || lower.contains("wall")) {
+            return "Architecture";
+        } else if (lower.contains("chair") || lower.contains("table") || lower.contains("sofa") ||
+                   lower.contains("desk") || lower.contains("furniture")) {
+            return "Furniture";
+        }
+        return "Objects";
+    }
+
+    private String inferFormat(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot != -1 && dot < fileName.length() - 1) {
+            return fileName.substring(dot + 1).toUpperCase(Locale.ROOT);
+        }
+        return "GLB";
+    }
+
+    private String formatFileSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        char pre = "KMGTPE".charAt(exp - 1);
+        return String.format(Locale.ROOT, "%.1f %cB", bytes / Math.pow(1024, exp), pre);
     }
 
     // ==========================================
