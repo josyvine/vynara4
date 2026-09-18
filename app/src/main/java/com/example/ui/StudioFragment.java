@@ -81,8 +81,10 @@ public class StudioFragment extends Fragment {
         seekbarTimeline = view.findViewById(R.id.seekbar_timeline);
         btnAnimPlay = view.findViewById(R.id.btn_anim_play);
 
-        // Setup OpenGL ES 2.0 Viewport Renderer
+        // Setup OpenGL ES 2.0 Viewport Renderer with context preservation
         glSurfaceView.setEGLContextClientVersion(2);
+        glSurfaceView.setPreserveEGLContextOnPause(true); // Keeps VRAM textures & shaders alive across tab navigation
+
         renderer = new StudioGLRenderer(engine.getSceneManager(), engine.getCameraManager(), engine.getLightManager());
         glSurfaceView.setRenderer(renderer);
         glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
@@ -338,7 +340,7 @@ public class StudioFragment extends Fragment {
                             float deltaX = x - previousTouchX;
                             float deltaY = y - previousTouchY;
 
-                            if (Math.abs(deltaX) < 100f && Math.abs(deltaY) < 100f) {
+                            if (!Float.isNaN(deltaX) && !Float.isNaN(deltaY) && Math.abs(deltaX) < 100f && Math.abs(deltaY) < 100f) {
                                 if (engine != null && engine.getCameraManager() != null) {
                                     Camera camera = engine.getCameraManager().getActiveCamera();
                                     if (camera != null) {
@@ -427,7 +429,12 @@ public class StudioFragment extends Fragment {
 
     public void clearScene() {
         if (engine != null && engine.getSceneManager() != null) {
-            engine.getSceneManager().getActiveScene().getObjects().clear();
+            Scene activeScene = engine.getSceneManager().getActiveScene();
+            if (activeScene != null) {
+                synchronized (activeScene) {
+                    activeScene.getObjects().clear();
+                }
+            }
             engine.getSceneManager().selectObject(null);
             if (runtime != null && runtime.getCharacterManager() != null) {
                 runtime.getCharacterManager().getCharacterMap().clear();
@@ -445,8 +452,15 @@ public class StudioFragment extends Fragment {
 
             runtime.getTransactionManager().beginTransaction("Import GLB Model");
 
-            for (SceneObject obj : result.getSceneObjects()) {
-                engine.getSceneManager().getActiveScene().addObject(obj);
+            Scene activeScene = engine.getSceneManager().getActiveScene();
+            if (activeScene != null) {
+                synchronized (activeScene) {
+                    // Remove default placeholder cube if present to avoid dual-mesh stacking
+                    activeScene.getObjects().removeIf(o -> "Cube".equalsIgnoreCase(o.getName()) || "default_cube".equalsIgnoreCase(o.getId()));
+                    for (SceneObject obj : result.getSceneObjects()) {
+                        activeScene.addObject(obj);
+                    }
+                }
             }
 
             for (Character ch : result.getCharacters()) {
@@ -458,7 +472,7 @@ public class StudioFragment extends Fragment {
             // Auto-frame camera on newly imported model
             if (!result.getSceneObjects().isEmpty() && engine.getCameraManager() != null) {
                 SceneObject first = result.getSceneObjects().get(0);
-                if (first.getTransform() != null) {
+                if (first != null && first.getTransform() != null) {
                     Camera cam = engine.getCameraManager().getActiveCamera();
                     if (cam != null) {
                         cam.setTarget(first.getTransform().getPx(), first.getTransform().getPy() + 1.0f, first.getTransform().getPz());
