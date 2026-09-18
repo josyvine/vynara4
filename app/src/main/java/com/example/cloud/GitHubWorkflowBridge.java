@@ -20,6 +20,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -40,10 +41,10 @@ public class GitHubWorkflowBridge {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     // Increased to 300 seconds (5 minutes) to comfortably handle multi-megabyte 3D model base64 payloads
     private static final int DEFAULT_TIMEOUT_SECONDS = 300;
-    private static final long POLLING_INTERVAL_MS = 4000; // 4 seconds interval
+    private static final long POLLING_INTERVAL_MS = 2500; // Optimized polling interval (2.5s)
     private static final long MAX_POLLING_DURATION_MS = 600000; // 10 minutes timeout (supports high-fidelity renders)
-    private static final int MAX_ARTIFACT_RETRY_ATTEMPTS = 8; // 8 retries (20s window for run-specific artifact indexing)
-    private static final long ARTIFACT_RETRY_DELAY_MS = 2500; // 2.5 seconds between artifact retries
+    private static final int MAX_ARTIFACT_RETRY_ATTEMPTS = 10; // 10 retries window for run-specific artifact indexing
+    private static final long ARTIFACT_RETRY_DELAY_MS = 1500; // 1.5 seconds between artifact retries
 
     private static volatile String sLastBlenderError = null;
     private static volatile String sLastBlenderTraceback = null;
@@ -296,7 +297,7 @@ public class GitHubWorkflowBridge {
             } catch (Throwable ignored) {}
         }
 
-        // If an imported 3D model exists on disk, upload to repository first
+        // If an imported 3D model exists on disk, upload to repository first (with duplicate hash bypass)
         if (inputModelFile != null && inputModelFile.exists() && inputModelFile.length() > 0) {
             uploadModelAndDispatch(repository, personalAccessToken, eventType, assetId, bpyScript, inputModelFile, callback);
         } else {
@@ -308,6 +309,7 @@ public class GitHubWorkflowBridge {
     /**
      * Uploads the imported 3D model to the repository at inputs/input_model.<ext>
      * so that GitHub Actions runner has the physical file ready when Blender starts.
+     * Includes SHA-1 comparison to bypass redundant re-uploads on retries.
      */
     private void uploadModelAndDispatch(String repository,
                                         String personalAccessToken,
@@ -325,9 +327,9 @@ public class GitHubWorkflowBridge {
         final String targetPath = "inputs/input_model" + ext;
         final String contentsUrl = "https://api.github.com/repos/" + repository.trim() + "/contents/" + targetPath;
 
-        VynaraLogger.system("GitHubWorkflowBridge: Uploading 3D asset (" + modelFile.length() + " bytes) to repository: " + targetPath);
+        VynaraLogger.system("GitHubWorkflowBridge: Checking repository state for: " + targetPath);
 
-        // Step 1: Query existing SHA (to allow overwriting existing input file)
+        // Step 1: Query existing SHA & file size (to allow cache hit bypass or overwrite)
         Request getShaReq = new Request.Builder()
                 .url(contentsUrl)
                 .header("Authorization", "Bearer " + personalAccessToken.trim())
@@ -339,21 +341,34 @@ public class GitHubWorkflowBridge {
         httpClient.newCall(getShaReq).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                // If SHA lookup fails, attempt upload without SHA
+                // If lookup fails due to network, attempt direct upload
                 performPutModel(repository, personalAccessToken, eventType, assetId, bpyScript, modelFile, targetPath, null, callback);
             }
 
             @Override
             public void onResponse(Call call, Response response) {
                 String existingSha = null;
+                long remoteSize = -1;
                 if (response.isSuccessful() && response.body() != null) {
                     try {
                         JSONObject obj = new JSONObject(response.body().string());
                         existingSha = obj.optString("sha", null);
+                        remoteSize = obj.optLong("size", -1);
                     } catch (Exception ignored) {}
                 }
                 response.close();
-                performPutModel(repository, personalAccessToken, eventType, assetId, bpyScript, modelFile, targetPath, existingSha, callback);
+
+                // Fast Checksum Comparison: If the remote file has identical Git SHA and size, bypass upload entirely!
+                String localGitBlobSha = computeGitBlobSha(modelFile);
+                if (existingSha != null && localGitBlobSha != null 
+                        && existingSha.equalsIgnoreCase(localGitBlobSha) 
+                        && remoteSize == modelFile.length()) {
+                    VynaraLogger.system("GitHubWorkflowBridge: 3D model already synced in repository (" + modelFile.length() + " bytes). Bypassing redundant upload.");
+                    executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
+                } else {
+                    VynaraLogger.system("GitHubWorkflowBridge: Uploading 3D asset (" + modelFile.length() + " bytes) to repository: " + targetPath);
+                    performPutModel(repository, personalAccessToken, eventType, assetId, bpyScript, modelFile, targetPath, existingSha, callback);
+                }
             }
         });
     }
@@ -399,7 +414,6 @@ public class GitHubWorkflowBridge {
                 public void onFailure(Call call, IOException e) {
                     String err = "Model file upload failed: " + e.getMessage();
                     VynaraLogger.e("GitHubWorkflowBridge: " + err);
-                    // CRITICAL GUARD: Abort immediately. Do not dispatch workflow if model upload failed!
                     mainHandler.post(() -> callback.onError(err + " (Upload timed out or was interrupted)"));
                 }
 
@@ -408,12 +422,10 @@ public class GitHubWorkflowBridge {
                     try {
                         if (response.isSuccessful() || response.code() == 200 || response.code() == 201) {
                             VynaraLogger.system("GitHubWorkflowBridge: Successfully uploaded 3D model to repository (" + targetPath + ")");
-                            // Only proceed to workflow dispatch upon successful upload
                             executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
                         } else {
                             String err = "Model upload rejected by GitHub [HTTP " + response.code() + "]: " + response.message();
                             VynaraLogger.e("GitHubWorkflowBridge: " + err);
-                            // CRITICAL GUARD: Stop immediately if GitHub rejected the file
                             mainHandler.post(() -> callback.onError(err));
                         }
                     } finally {
@@ -1204,6 +1216,36 @@ public class GitHubWorkflowBridge {
             }
         }
         return lines[lines.length - 1].trim();
+    }
+
+    /**
+     * Computes the Git Blob SHA-1 of a local file (matching GitHub's content blob SHA algorithm).
+     * Format: sha1("blob <size>\0<content>")
+     */
+    private static String computeGitBlobSha(File file) {
+        if (file == null || !file.exists() || !file.isFile()) return null;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            String header = "blob " + file.length() + "\0";
+            md.update(header.getBytes(StandardCharsets.US_ASCII));
+
+            try (InputStream is = new FileInputStream(file)) {
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = is.read(buf)) != -1) {
+                    md.update(buf, 0, r);
+                }
+            }
+
+            byte[] digest = md.digest();
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static File getAssociatedRenderImage(File glbFile) {
