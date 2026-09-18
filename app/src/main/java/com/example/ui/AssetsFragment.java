@@ -1,6 +1,11 @@
 package com.example.ui;
 
+import android.content.Context;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.LayoutInflater;
@@ -9,6 +14,8 @@ import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
@@ -32,6 +39,23 @@ public class AssetsFragment extends Fragment {
     private final List<Asset> realAssets = new ArrayList<>();
     private EditText etSearch;
     private ProjectRuntime runtime;
+
+    private ActivityResultLauncher<String[]> filePickerLauncher;
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // Register modern Storage Access Framework contract for 3D model selection
+        filePickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.OpenDocument(),
+                uri -> {
+                    if (uri != null) {
+                        handleImportedAsset(uri);
+                    }
+                }
+        );
+    }
 
     @Nullable
     @Override
@@ -70,6 +94,28 @@ public class AssetsFragment extends Fragment {
         });
         rvAssets.setAdapter(adapter);
 
+        // Hook up import triggers to file picker launcher
+        View.OnClickListener importClickListener = v -> {
+            if (filePickerLauncher != null) {
+                filePickerLauncher.launch(new String[]{
+                        "*/*",
+                        "model/gltf-binary",
+                        "model/gltf+json",
+                        "application/octet-stream"
+                });
+            }
+        };
+
+        View btnImport = view.findViewById(R.id.btn_import_asset);
+        if (btnImport != null) {
+            btnImport.setOnClickListener(importClickListener);
+        }
+
+        View fabImport = view.findViewById(R.id.fab_import_asset);
+        if (fabImport != null) {
+            fabImport.setOnClickListener(importClickListener);
+        }
+
         loadGeneratedAssets();
 
         if (etSearch != null) {
@@ -88,6 +134,59 @@ public class AssetsFragment extends Fragment {
         }
 
         setupCategoryChips(view);
+    }
+
+    /**
+     * Handles the picked 3D asset Uri, acquires persistable read permission,
+     * extracts the file name, imports into AssetManager, and updates UI.
+     */
+    private void handleImportedAsset(@NonNull Uri uri) {
+        Context context = getContext();
+        if (context == null || runtime == null) return;
+
+        try {
+            context.getContentResolver().takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            );
+        } catch (Exception ignored) {
+            // Some content providers do not support persistable permissions
+        }
+
+        String fileName = getFileNameFromUri(context, uri);
+        AssetManager assetMgr = runtime.getAssetManager();
+
+        Asset imported = assetMgr.importAssetFromUri(context, uri, fileName);
+        if (imported != null) {
+            Toast.makeText(context, "Imported: " + imported.getName(), Toast.LENGTH_SHORT).show();
+            loadGeneratedAssets();
+        } else {
+            Toast.makeText(context, "Failed to import 3D model", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String getFileNameFromUri(Context context, Uri uri) {
+        String result = null;
+        if ("content".equals(uri.getScheme())) {
+            try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (index != -1) {
+                        result = cursor.getString(index);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        if (result == null) {
+            result = uri.getPath();
+            if (result != null) {
+                int cut = result.lastIndexOf('/');
+                if (cut != -1) {
+                    result = result.substring(cut + 1);
+                }
+            }
+        }
+        return (result != null && !result.trim().isEmpty()) ? result : "model_" + System.currentTimeMillis() + ".glb";
     }
 
     /**
