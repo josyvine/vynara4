@@ -12,6 +12,24 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Isolated Ingestion: Check out and prepare user-uploaded 3D model (FBX, GLB, OBJ)
+      - name: Ingest Uploaded 3D Model
+        run: |
+          MODEL_PATH="${{ github.event.client_payload.model_path }}"
+          if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
+            EXT="${MODEL_PATH##*.}"
+            cp "$MODEL_PATH" "input_model.$EXT"
+            echo "Successfully ingested input model from $MODEL_PATH -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
+          elif [ -d "inputs" ]; then
+            FOUND_FILE=$(find inputs -type f \( -name "*.fbx" -o -name "*.glb" -o -name "*.gltf" -o -name "*.obj" \) | head -n 1)
+            if [ -n "$FOUND_FILE" ]; then
+              EXT="${FOUND_FILE##*.}"
+              cp "$FOUND_FILE" "input_model.$EXT"
+              echo "Successfully ingested auto-detected model: $FOUND_FILE -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
+            fi
+          fi
+          ls -la input_model.* 2>/dev/null || echo "No uploaded 3D model detected. Running pure procedural pipeline."
+
       # Step 1: Check GitHub Actions Cache (Restores in ~3s on Run 2+)
       - name: Restore Blender Cache
         id: blender-cache
@@ -61,7 +79,7 @@ jobs:
                       event_data = json.load(ef)
                       payload = event_data.get('client_payload', {})
                       
-                      # Support unpacked user 3D models passed in payload
+                      # Support base64 model payloads if passed directly
                       input_model_b64 = payload.get('input_model_b64', '')
                       if input_model_b64 and input_model_b64.strip():
                           try:
