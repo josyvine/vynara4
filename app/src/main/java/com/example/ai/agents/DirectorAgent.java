@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class DirectorAgent {
     private final GeminiApiClient apiClient;
@@ -49,15 +50,23 @@ public class DirectorAgent {
 
         final String activeModel = apiKeyManager.getSelectedModel();
 
-        // 1. Read and downscale reference images for Gemini Vision
+        // 1. Differentiate between 2D reference images and imported 3D models
         List<String> base64Images = new ArrayList<>();
+        List<String> attached3DModels = new ArrayList<>();
+
         if (referenceImageUris != null && !referenceImageUris.isEmpty()) {
             for (String uriOrPath : referenceImageUris) {
-                String b64 = readImageAsBase64(uriOrPath);
-                if (b64 != null && !b64.isEmpty()) {
-                    base64Images.add(b64);
+                if (is3DModelUri(uriOrPath)) {
+                    String modelName = extractModelName(uriOrPath);
+                    attached3DModels.add(modelName);
+                    VynaraLogger.system("DirectorAgent: Attached 3D model metadata identified: " + modelName);
                 } else {
-                    VynaraLogger.w("DirectorAgent: Reference image could not be converted to Base64: " + uriOrPath);
+                    String b64 = readImageAsBase64(uriOrPath);
+                    if (b64 != null && !b64.isEmpty()) {
+                        base64Images.add(b64);
+                    } else {
+                        VynaraLogger.w("DirectorAgent: Reference image could not be converted to Base64: " + uriOrPath);
+                    }
                 }
             }
         }
@@ -67,6 +76,13 @@ public class DirectorAgent {
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
         promptBuilder.append("REQUESTED STYLE: ").append(style).append("\n");
+
+        if (!attached3DModels.isEmpty()) {
+            promptBuilder.append("ACTIVE 3D MODEL ATTACHED: The scene contains an imported 3D mesh asset: ")
+                         .append(String.join(", ", attached3DModels))
+                         .append(". Worker 1 must import the normalized asset (inputs/input_model.glb) into the scene rather than generating a replacement placeholder chassis.\n");
+        }
+
         if (!base64Images.isEmpty()) {
             promptBuilder.append("VISUAL REFERENCE ATTACHED: Inspect the attached visual reference image(s). ")
                          .append("Deconstruct the actual physical geometry, automotive curves or architectural cantilever slabs, ")
@@ -147,7 +163,7 @@ public class DirectorAgent {
         promptBuilder.append("DIRECTIVE: Generate a high-speed, cinematic, photorealistic sequence. ")
                      .append("If category is 'Vehicle', generate procedural road spline, guardrails, automated wheel rotation drivers ")
                      .append("(angular velocity = linear speed / wheel radius), shrinkwrap ground sensors, rear-wheel low-angle camera framing, ")
-                     .append("and 180-degree optical shutter motion blur. No static poly placeholders.");
+                     .append("and 180-degree optical shutter motion blur. No static poly placeholders. Import model from inputs/input_model.glb.");
 
         VynaraLogger.system("DirectorAgent: Formulating autonomous asset animation spec for [" + modelName + "]...");
 
@@ -198,11 +214,12 @@ public class DirectorAgent {
         return "You are the 3D Master Art Director & Spatial Architect (like Fable 5 / SKILL.md).\n" +
                 "YOUR ROLE:\n" +
                 "- You NEVER write Python code or Blender operators directly.\n" +
-                "- Your job is to analyze the user's prompt and reference images, and decompose the scene into a structured 4-Worker dynamic specification.\n" +
+                "- Your job is to analyze the user's prompt, imported asset context, and reference images, and decompose the scene into a structured 4-Worker dynamic specification.\n" +
                 "- Never settle for generic primitives or low-poly cubes. Define aerodynamic curvatures, bevels, architectural cantilevers, and authentic wheel orientations.\n\n" +
                 "CINEMATIC DIRECTIVES:\n" +
                 "1. Worker 1 (Structure & Environment):\n" +
                 "   - Define primary volume, chassis, or building envelope.\n" +
+                "   - If an imported 3D asset exists, instruct Worker 1 to import it from 'inputs/input_model.glb' (or 'inputs/input_model.fbx').\n" +
                 "   - For driving/high-speed shots: define a procedural road ribbon with asphalt, curbs, steel guardrails, and street lamps along a path curve.\n" +
                 "   - Always specify bevel radius (e.g. 0.04m - 0.08m) and smooth shading.\n" +
                 "2. Worker 2 (Details, Kinematics & Rigging):\n" +
@@ -218,7 +235,7 @@ public class DirectorAgent {
                 "   - Wide-angle focal length (18mm - 24mm) to amplify speed parallax.\n" +
                 "   - Depth of field locked to rear rim (f/2.8).\n" +
                 "   - Enable 180-degree optical motion blur (shutter = 0.5) to streak road lines and spin wheels.\n" +
-                "   - Low-horizon Sun lighting with rim-light highlights, lens flare, and AgX/Filmic color management.\n\n" +
+                "   - Low-horizon Sun lighting with rim-light highlights, lens flare, and strict Blender 4.2 AgX color management ('AgX - High Contrast').\n\n" +
                 "OUTPUT RAW STRICT JSON ONLY (NO MARKDOWN FENCES):\n" +
                 "{\n" +
                 "  \"sceneType\": \"string\",\n" +
@@ -275,8 +292,9 @@ public class DirectorAgent {
         switch (workerIndex) {
             case 1: // Worker 1: Core Structure & Procedural Environment
                 sb.append("\nTASK: WORKER 1 (STRUCTURE & ENVIRONMENT)\n")
+                  .append("- If an imported 3D asset is in 'inputs/', import it using `bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')` (or 'input_model.glb').\n")
                   .append("- Generate primary structural geometry or procedural road spline with curbs, barrier guardrail, and lamp poles.\n")
-                  .append("- If car: build aerodynamic chassis envelope or load imported asset root.\n")
+                  .append("- If car: build aerodynamic chassis envelope or position imported asset at origin.\n")
                   .append("- Always add BEVEL modifier (width=0.04, segments=3) and enable smooth shading (`bpy.ops.object.shade_smooth()`).\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
@@ -301,12 +319,41 @@ public class DirectorAgent {
                   .append("- Parent camera to vehicle chassis so it tracks perfectly with movement.\n")
                   .append("- Configure Depth of Field (f/2.8) locked on the rear wheel.\n")
                   .append("- CRITICAL: Enable Motion Blur in render settings (`scene.render.use_motion_blur = True`, shutter=0.5) to produce authentic speed streaks.\n")
-                  .append("- Add low-elevation Sun light (18-25 deg) for golden rim highlights, enable AgX color management, and render MP4 preview.\n")
+                  .append("- Set color management look using Blender 4.2 AgX enums: `scene.view_settings.look = 'AgX - High Contrast'`. NEVER use legacy 'High Contrast'.\n")
+                  .append("- Add low-elevation Sun light (18-25 deg) for golden rim highlights and render MP4 preview.\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Determines whether a path or URI points to a 3D model rather than a 2D image.
+     */
+    private static boolean is3DModelUri(String uriOrPath) {
+        if (uriOrPath == null || uriOrPath.trim().isEmpty()) return false;
+        String lower = uriOrPath.toLowerCase(Locale.US);
+        return lower.startsWith("model:")
+                || lower.endsWith(".fbx")
+                || lower.endsWith(".glb")
+                || lower.endsWith(".gltf")
+                || lower.endsWith(".obj")
+                || lower.contains("models_cache");
+    }
+
+    /**
+     * Extracts a human-readable asset filename from a model URI or path.
+     */
+    private static String extractModelName(String uriOrPath) {
+        if (uriOrPath == null) return "Imported Model";
+        String clean = uriOrPath;
+        if (clean.startsWith("model:")) clean = clean.substring(6);
+        int lastSlash = clean.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < clean.length() - 1) {
+            clean = clean.substring(lastSlash + 1);
+        }
+        return clean;
     }
 
     /**
@@ -337,6 +384,10 @@ public class DirectorAgent {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(imageFile.getAbsolutePath(), options);
+
+            if (options.outWidth <= 0 || options.outHeight <= 0) {
+                return null;
+            }
 
             int maxDim = Math.max(options.outWidth, options.outHeight);
             int inSampleSize = 1;
