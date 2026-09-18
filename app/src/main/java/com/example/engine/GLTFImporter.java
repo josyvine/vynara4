@@ -140,7 +140,15 @@ public class GLTFImporter {
 
                         if (byteOffset + byteLength <= binaryBuffer.length) {
                             try {
-                                bitmap = BitmapFactory.decodeByteArray(binaryBuffer, byteOffset, byteLength);
+                                BitmapFactory.Options opts = new BitmapFactory.Options();
+                                opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                                bitmap = BitmapFactory.decodeByteArray(binaryBuffer, byteOffset, byteLength, opts);
+                            } catch (OutOfMemoryError oom) {
+                                try {
+                                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                                    opts.inSampleSize = 2; // Downsample 2x to prevent mobile OOM
+                                    bitmap = BitmapFactory.decodeByteArray(binaryBuffer, byteOffset, byteLength, opts);
+                                } catch (Throwable ignored) {}
                             } catch (Exception e) {
                                 VynaraLogger.e("GLTFImporter: Failed decoding embedded texture #" + i, e);
                             }
@@ -255,8 +263,11 @@ public class GLTFImporter {
                             uvs = new float[(positions.length / 3) * 2];
                         }
                         if (indices == null) {
-                            indices = new short[(short) (positions.length / 3)];
-                            for (short s = 0; s < indices.length; s++) indices[s] = s;
+                            int vertexCount = positions.length / 3;
+                            indices = new short[vertexCount];
+                            for (int s = 0; s < vertexCount; s++) {
+                                indices[s] = (short) s;
+                            }
                         }
 
                         Mesh mesh = new Mesh(positions, normals, uvs, indices);
@@ -367,8 +378,8 @@ public class GLTFImporter {
                         }
                     }
                 } else {
-                    // Create an empty transform node to preserve parent transformation offsets
-                    primaryObject = new SceneObject("empty_node_" + n, nodeName, "PRIMITIVE", null, null);
+                    // Create an empty locator / transform node (tagged as EMPTY to distinguish from geometry)
+                    primaryObject = new SceneObject("empty_node_" + n, nodeName, "EMPTY", null, null);
                     applyNodeTransformToObject(nodeObj, primaryObject);
                 }
 
@@ -469,7 +480,8 @@ public class GLTFImporter {
             if (componentType == 5123) { // UNSIGNED_SHORT
                 result[i] = (short) (bb.getShort() & 0xFFFF);
             } else if (componentType == 5125) { // UNSIGNED_INT
-                result[i] = (short) bb.getInt();
+                long intVal = bb.getInt() & 0xFFFFFFFFL;
+                result[i] = (short) (intVal & 0xFFFF);
             } else if (componentType == 5121) { // UNSIGNED_BYTE
                 result[i] = (short) (bb.get() & 0xFF);
             } else {
@@ -545,9 +557,9 @@ public class GLTFImporter {
         }
 
         // Yaw (Z-axis rotation)
-        double siny_cosp = 2.0 * (w * z + x * y);
-        double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
-        euler[2] = (float) Math.toDegrees(Math.atan2(siny_cosp, cosy_cosp));
+        double cosy_cosp = 2.0 * (w * z + x * y);
+        double siny_cosp = 1.0 - 2.0 * (y * y + z * z);
+        euler[2] = (float) Math.toDegrees(Math.atan2(cosy_cosp, siny_cosp));
 
         return euler;
     }
