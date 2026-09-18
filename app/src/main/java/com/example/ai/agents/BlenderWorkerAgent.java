@@ -165,7 +165,8 @@ public class BlenderWorkerAgent {
 
     /**
      * Dynamically builds Worker 1 (Structure) using real procedural shaping, subdivision,
-     * and boolean carving, or loads an uploaded 3D asset if present in the worker environment.
+     * and boolean carving, or loads an uploaded 3D asset (.fbx, .glb, .obj, .gltf)
+     * if present in the worker environment.
      */
     private static String buildWorker1StructureScript(String promptOrCode, AIDirectorSpec spec) {
         if (promptOrCode == null) return "";
@@ -199,11 +200,23 @@ public class BlenderWorkerAgent {
         sb.append("    bsdf_b.inputs['Roughness'].default_value = 0.05\n");
         sb.append("    bsdf_b.inputs['Metallic'].default_value = 0.9\n\n");
 
-        // Check if an imported 3D asset exists in current directory
-        sb.append("# Check for user imported asset model\n");
+        // Check for user-uploaded 3D model (FBX, GLB, GLTF, OBJ)
+        sb.append("# Check for user imported asset model in workspace\n");
         sb.append("imported_car = None\n");
-        sb.append("if os.path.exists('input_model.glb'):\n");
-        sb.append("    print('Loading user-provided 3D model input_model.glb...')\n");
+        sb.append("if os.path.exists('input_model.fbx'):\n");
+        sb.append("    print('Loading user-provided 3D FBX model: input_model.fbx...')\n");
+        sb.append("    bpy.ops.import_scene.fbx(filepath='input_model.fbx')\n");
+        sb.append("    for obj in bpy.context.selected_objects:\n");
+        sb.append("        if obj.type == 'MESH':\n");
+        sb.append("            obj_name = obj.name.lower()\n");
+        sb.append("            if 'wheel' in obj_name or 'tire' in obj_name or 'rim' in obj_name:\n");
+        sb.append("                pass\n");
+        sb.append("            elif 'body' in obj_name or 'chassis' in obj_name or imported_car is None:\n");
+        sb.append("                imported_car = obj\n");
+        sb.append("    if imported_car:\n");
+        sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("elif os.path.exists('input_model.glb'):\n");
+        sb.append("    print('Loading user-provided 3D GLB model: input_model.glb...')\n");
         sb.append("    bpy.ops.import_scene.gltf(filepath='input_model.glb')\n");
         sb.append("    for obj in bpy.context.selected_objects:\n");
         sb.append("        if obj.type == 'MESH' and ('body' in obj.name.lower() or 'chassis' in obj.name.lower() or imported_car is None):\n");
@@ -211,7 +224,16 @@ public class BlenderWorkerAgent {
         sb.append("    if imported_car:\n");
         sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
         sb.append("elif os.path.exists('input_model.gltf'):\n");
+        sb.append("    print('Loading user-provided 3D GLTF model: input_model.gltf...')\n");
         sb.append("    bpy.ops.import_scene.gltf(filepath='input_model.gltf')\n");
+        sb.append("    for obj in bpy.context.selected_objects:\n");
+        sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
+        sb.append("            imported_car = obj\n");
+        sb.append("    if imported_car:\n");
+        sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("elif os.path.exists('input_model.obj'):\n");
+        sb.append("    print('Loading user-provided 3D OBJ model: input_model.obj...')\n");
+        sb.append("    bpy.ops.wm.obj_import(filepath='input_model.obj')\n");
         sb.append("    for obj in bpy.context.selected_objects:\n");
         sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
         sb.append("            imported_car = obj\n");
@@ -219,7 +241,8 @@ public class BlenderWorkerAgent {
         sb.append("        imported_car.name = 'Vehicle_Chassis'\n\n");
 
         boolean isVehicle = p.contains("car") || p.contains("vehicle") || p.contains("suv") 
-                || p.contains("sedan") || p.contains("truck") || p.contains("drive") || p.contains("speed");
+                || p.contains("sedan") || p.contains("truck") || p.contains("drive") || p.contains("speed")
+                || p.contains("r8");
 
         if (isVehicle) {
             sb.append("if not imported_car:\n");
@@ -396,9 +419,16 @@ public class BlenderWorkerAgent {
             sb.append("    post.data.materials.append(mat_guard)\n\n");
 
             sb.append("# Automated Rigging: Wheel Spin Drivers & Ground Sensors (Shrinkwrap)\n");
-            sb.append("wheels = [obj for obj in bpy.data.objects if 'wheel' in obj.name.lower() or 'tire' in obj.name.lower()]\n");
+            sb.append("wheels = [obj for obj in bpy.data.objects if obj.type == 'MESH' and ('wheel' in obj.name.lower() or 'tire' in obj.name.lower() or 'rim' in obj.name.lower())]\n");
             sb.append("chassis_obj = bpy.data.objects.get('Vehicle_Chassis')\n");
             sb.append("if chassis_obj:\n");
+            sb.append("    # Fallback for imported vehicles where wheels have generic names\n");
+            sb.append("    if not wheels:\n");
+            sb.append("        mesh_candidates = [o for o in bpy.data.objects if o.type == 'MESH' and o != chassis_obj and o.name != 'Road_Surface' and o.name != 'Highway_Guardrail']\n");
+            sb.append("        if len(mesh_candidates) >= 4:\n");
+            sb.append("            mesh_candidates.sort(key=lambda o: (o.dimensions.x * o.dimensions.y * o.dimensions.z))\n");
+            sb.append("            wheels = mesh_candidates[:4]\n\n");
+
             sb.append("    # Animate forward car translation across 60 frames\n");
             sb.append("    chassis_obj.animation_data_create()\n");
             sb.append("    chassis_obj.location = (0, -10.0, 0.7)\n");
