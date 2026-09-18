@@ -66,7 +66,7 @@ public class ValidationManager {
 
         boolean isTransformContainer = (obj.getChildren() != null && !obj.getChildren().isEmpty());
         String nameLower = obj.getName() != null ? obj.getName().toLowerCase(Locale.US) : "";
-        String typeLower = obj.getType() != null ? obj.getType().toLowerCase(Locale.US) : "";
+        String typeLower = obj.getSemanticType() != null ? obj.getSemanticType().toLowerCase(Locale.US) : "";
 
         // Identify non-mesh nodes: parent transform containers, empties, locators, and camera/lighting focus anchors
         boolean isNonMeshNode = isTransformContainer
