@@ -5,9 +5,11 @@ import com.example.ai.agents.DirectorAgent;
 import com.example.ai.protocol.AIDirectorSpec;
 import com.example.ai.protocol.AIProductionPlan;
 import com.example.ai.protocol.AIProductionRequest;
+import com.example.asset.Asset;
 import com.example.cloud.CloudProvider;
 import com.example.knowledge.KnowledgeEntry;
 import com.example.knowledge.KnowledgeManager;
+import com.example.runtime.ProjectRuntime;
 import com.example.tasks.ProductionPlan;
 import com.example.tasks.TaskNode;
 import com.example.tools.ToolDefinition;
@@ -18,8 +20,10 @@ import com.example.utils.VynaraLogger;
 
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class AIOrchestrator {
     private final GeminiApiClient apiClient;
@@ -68,7 +72,9 @@ public class AIOrchestrator {
      * Executes the Autonomous Production Pipeline:
      * Phase 1: DirectorAgent inspects prompt & visual references to formulate the spatial/visual contract.
      * Phase 2: If Demo Preset, uses the curated demo script. If Custom Prompt, dispatches live to Gemini
-     *          to write 100% custom Blender Python (bpy) code from scratch.
+     *          to write custom Blender Python (bpy) code.
+     *          If an imported 3D asset is detected, Gemini is strictly instructed to import the asset
+     *          and script the environment/camera/motion around it without generating primitive cubes.
      * Phase 3: Wraps the Python code with CPU-safe Cycles settings, camera rigs, and GLB export.
      */
     public void planProductionWithGemini(final AIProductionRequest request, final GeminiApiClient.ApiCallback<ProductionPlan> callback) {
@@ -86,6 +92,34 @@ public class AIOrchestrator {
 
         VynaraLogger.system("AIOrchestrator: Initiating Phase 1 (Director Agent Specification)...");
 
+        // Check if an imported 3D asset is actively bound to this production request
+        String modelFilePath = null;
+        if (request.getReferenceImageUris() != null) {
+            for (String uri : request.getReferenceImageUris()) {
+                if (uri != null && uri.startsWith("model:")) {
+                    modelFilePath = uri.substring(6);
+                    break;
+                }
+            }
+        }
+
+        if (modelFilePath == null) {
+            try {
+                ProjectRuntime runtime = ProjectRuntime.getInstance();
+                if (runtime != null) {
+                    Asset active = runtime.getActiveSelectedAsset();
+                    if (active != null && active.getFilePath() != null) {
+                        File candidate = new File(active.getFilePath());
+                        if (candidate.exists() && candidate.length() > 0) {
+                            modelFilePath = active.getFilePath();
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        final String activeModelPath = modelFilePath;
+
         // Phase 1: Formulate Director Specification
         directorAgent.formulateDirectorSpec(
                 request.getUserPrompt(),
@@ -101,8 +135,8 @@ public class AIOrchestrator {
                             final ProductionPlan plan = promptInterpreter.createProductionPlan(
                                     request.getUserPrompt(), request.getStyle(), request.getTargetEngine(), request.getReferenceImageUris());
 
-                            // Check if this is an explicit demo preset without custom reference images
-                            boolean isDemo = isDemoPreset(request.getUserPrompt()) && !request.hasReferenceImages();
+                            // Check if this is an explicit demo preset without custom reference images or models
+                            boolean isDemo = isDemoPreset(request.getUserPrompt()) && !request.hasReferenceImages() && (activeModelPath == null);
 
                             if (isDemo) {
                                 VynaraLogger.system("AIOrchestrator: Demo Preset recognized. Preserving curated demo production script.");
@@ -118,13 +152,13 @@ public class AIOrchestrator {
                                 }
                                 callback.onSuccess(plan);
                             } else {
-                                // Phase 2: Dynamic AI Script Writer (Live Gemini Generation for custom creative prompts & reference images)
+                                // Phase 2: Dynamic AI Script Writer (Live Gemini Generation for custom creative prompts & imported models)
                                 VynaraLogger.system("AIOrchestrator: Custom creative prompt detected. Engaging Phase 2 Dynamic AI Script Writer...");
-                                dispatchDynamicScriptWriter(request.getUserPrompt(), request.getStyle(), directorSpec, new GeminiApiClient.ApiCallback<String>() {
+                                dispatchDynamicScriptWriter(request.getUserPrompt(), request.getStyle(), directorSpec, activeModelPath, new GeminiApiClient.ApiCallback<String>() {
                                     @Override
                                     public void onSuccess(String dynamicBpyCode) {
                                         // Phase 3: Local Safety Wrapper with CPU-Safe Settings and Standard GLB Export
-                                        String finalMasterScript = wrapDynamicScriptWithSafety(dynamicBpyCode, directorSpec);
+                                        String finalMasterScript = wrapDynamicScriptWithSafety(dynamicBpyCode, directorSpec, activeModelPath);
 
                                         for (TaskNode node : plan.getTaskGraph().getAllNodes()) {
                                             if (node.getOperation() != null && 
@@ -166,31 +200,70 @@ public class AIOrchestrator {
     }
 
     /**
-     * Phase 2: Dispatches a live request to Gemini to author 100% custom Blender Python (bpy) code from scratch.
+     * Phase 2: Dispatches a live request to Gemini to author custom Blender Python (bpy) code.
+     * If an imported 3D model is present, instructs Gemini to load that model dynamically and
+     * ONLY script the environment, motion, lighting, and camera without hallucinating primitive cubes.
      */
     private void dispatchDynamicScriptWriter(final String userPrompt, 
                                              final String style, 
-                                             final AIDirectorSpec directorSpec, 
+                                             final AIDirectorSpec directorSpec,
+                                             final String importedModelPath,
                                              final GeminiApiClient.ApiCallback<String> callback) {
         VynaraLogger.system("AIOrchestrator: Synthesizing live Blender Python code via Gemini Script Writer...");
 
-        String systemInstruction = "You are an expert 3D modeling and rigging engineer using Blender's Python API (`bpy`).\n" +
-                "Generate production-grade, error-free Python code for Blender 4.x/5.x to build the 3D model or scene requested.\n" +
-                "CRITICAL SYNTAX & OPERATOR RULES:\n" +
-                "1. Output ONLY executable Python code inside a single ```python code block. No explanations, no markdown outside the block.\n" +
-                "2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., car body, wheels, chassis, windows, walls, roofs, terrain, character anatomy).\n" +
-                "3. Use modifiers where appropriate (Bevel, Subdivision Surface, Mirror, Solidify, Boolean).\n" +
-                "4. Create Principled BSDF materials with realistic Base Color, Metallic, Roughness, and Transmission according to the Director Spec.\n" +
-                "5. NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n" +
-                "6. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"` or use string concatenation `\"Name_\" + str(i)`.\n" +
-                "7. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`, `bpy.ops.mesh.primitive_cone_add`, `bpy.ops.mesh.primitive_uv_sphere_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n" +
-                "8. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n" +
-                "9. Do not include GUI/context-dependent operators that fail in headless mode (avoid bpy.ops.view3d, screen area operators).\n" +
-                "10. Organize objects cleanly with descriptive names and parent them logically.";
+        final boolean hasImportedModel = (importedModelPath != null && !importedModelPath.trim().isEmpty());
+        String modelExt = ".glb";
+        if (hasImportedModel) {
+            String lower = importedModelPath.toLowerCase(Locale.US);
+            if (lower.endsWith(".fbx")) modelExt = ".fbx";
+            else if (lower.endsWith(".obj")) modelExt = ".obj";
+            else if (lower.endsWith(".gltf")) modelExt = ".gltf";
+        }
+
+        StringBuilder sysInstBuilder = new StringBuilder();
+        sysInstBuilder.append("You are an expert 3D technical director and rigging engineer using Blender's Python API (`bpy`).\n");
+        sysInstBuilder.append("Generate production-grade, error-free Python code for Blender 4.x/5.x.\n");
+        sysInstBuilder.append("CRITICAL SYNTAX & OPERATOR RULES:\n");
+        sysInstBuilder.append("1. Output ONLY executable Python code inside a single ```python code block. No explanations outside the block.\n");
+
+        if (hasImportedModel) {
+            sysInstBuilder.append("2. CRITICAL - USER IMPORTED 3D ASSET DETECTED:\n");
+            sysInstBuilder.append("   - The user has already provided the primary 3D model. It is available in the workspace as 'inputs/input_model").append(modelExt).append("' (or 'input_model").append(modelExt).append("').\n");
+            sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists in the file!\n");
+            sysInstBuilder.append("   - STEP 1: Import the user's model using the correct operator:\n");
+            if (".fbx".equals(modelExt)) {
+                sysInstBuilder.append("     import_path = 'inputs/input_model.fbx' if os.path.exists('inputs/input_model.fbx') else 'input_model.fbx'\n");
+                sysInstBuilder.append("     bpy.ops.import_scene.fbx(filepath=import_path)\n");
+            } else if (".obj".equals(modelExt)) {
+                sysInstBuilder.append("     import_path = 'inputs/input_model.obj' if os.path.exists('inputs/input_model.obj') else 'input_model.obj'\n");
+                sysInstBuilder.append("     bpy.ops.wm.obj_import(filepath=import_path)\n");
+            } else {
+                sysInstBuilder.append("     import_path = 'inputs/input_model.glb' if os.path.exists('inputs/input_model.glb') else 'input_model.glb'\n");
+                sysInstBuilder.append("     bpy.ops.import_scene.gltf(filepath=import_path)\n");
+            }
+            sysInstBuilder.append("   - STEP 2: Inspect `bpy.context.selected_objects` to reference the imported root and sub-assemblies.\n");
+            sysInstBuilder.append("   - STEP 3: Script ONLY the surrounding environment (terrain, road, sky, props), movement/animation paths, parenting, lighting, and camera tracking around this imported model.\n");
+        } else {
+            sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
+            sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
+        }
+
+        sysInstBuilder.append("3. Use modifiers where appropriate (Bevel, Subdivision Surface, Mirror, Solidify, Boolean, Shrinkwrap).\n");
+        sysInstBuilder.append("4. Create Principled BSDF materials with realistic Base Color, Metallic, Roughness, and Transmission according to the Director Spec.\n");
+        sysInstBuilder.append("5. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"` or use string concatenation.\n");
+        sysInstBuilder.append("6. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
+        sysInstBuilder.append("7. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
+        sysInstBuilder.append("8. Do not include GUI/context-dependent operators that fail in headless mode.\n");
+        sysInstBuilder.append("9. Organize objects cleanly with descriptive names and parent them logically.");
 
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
         promptBuilder.append("STYLE: ").append(style).append("\n");
+        if (hasImportedModel) {
+            promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model (format: ").append(modelExt.toUpperCase(Locale.ROOT))
+                         .append(") is provided at 'inputs/input_model").append(modelExt).append("'. ")
+                         .append("Import it directly and direct the scene/animation/camera around it. Do not sculpt a replacement subject from cubes!\n");
+        }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
         promptBuilder.append("- Mood: ").append(directorSpec.getMood()).append("\n");
@@ -201,12 +274,12 @@ public class AIOrchestrator {
         promptBuilder.append("- Volumetric Fog: ").append(directorSpec.isUseVolumetrics()).append("\n");
         promptBuilder.append("- Hero Seed: ").append(directorSpec.getSeedHero()).append("\n");
         promptBuilder.append("- Environment Seed: ").append(directorSpec.getSeedVegetation()).append("\n\n");
-        promptBuilder.append("Now generate the complete Blender Python script to sculpt and build this asset.");
+        promptBuilder.append("Now generate the complete Blender Python script to direct and produce this asset scene.");
 
         apiClient.generateContent(
                 apiKeyManager.getApiKey(),
                 apiKeyManager.getSelectedModel(),
-                systemInstruction,
+                sysInstBuilder.toString(),
                 promptBuilder.toString(),
                 new GeminiApiClient.ApiCallback<String>() {
                     @Override
@@ -233,7 +306,7 @@ public class AIOrchestrator {
      * Phase 3: Wraps Gemini's dynamic modeling script with headless scene initialization,
      * cinematic camera/lighting, CPU-safe Cycles settings, and standardized GLB export.
      */
-    private String wrapDynamicScriptWithSafety(String dynamicCode, AIDirectorSpec spec) {
+    private String wrapDynamicScriptWithSafety(String dynamicCode, AIDirectorSpec spec, String importedModelPath) {
         StringBuilder sb = new StringBuilder();
         sb.append("# ==========================================\n");
         sb.append("# Vynara Autonomous 3D Studio - Dynamic AI Build\n");
@@ -251,11 +324,12 @@ public class AIOrchestrator {
         sb.append("except Exception as e:\n");
         sb.append("    print(f'Addon activation note: {e}')\n\n");
         sb.append("os.makedirs('output', exist_ok=True)\n\n");
+
         sb.append("# Reset scene completely\n");
         sb.append("bpy.ops.object.select_all(action='SELECT')\n");
         sb.append("bpy.ops.object.delete(use_global=False)\n\n");
 
-        sb.append("# --- DYNAMIC AI MESH GENERATION ---\n");
+        sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
 
         sb.append("# --- CINEMATIC LIGHTING & CAMERA RIG ---\n");
@@ -473,10 +547,10 @@ public class AIOrchestrator {
                 }
 
                 // Dynamic Generation for custom prompts
-                dispatchDynamicScriptWriter(prompt, "Photorealistic", spec, new GeminiApiClient.ApiCallback<String>() {
+                dispatchDynamicScriptWriter(prompt, "Photorealistic", spec, null, new GeminiApiClient.ApiCallback<String>() {
                     @Override
                     public void onSuccess(String dynamicBpyCode) {
-                        String wrappedScript = wrapDynamicScriptWithSafety(dynamicBpyCode, spec);
+                        String wrappedScript = wrapDynamicScriptWithSafety(dynamicBpyCode, spec, null);
                         callback.onSuccess(wrappedScript);
                     }
 
