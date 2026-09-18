@@ -119,17 +119,106 @@ public class DirectorAgent {
         );
     }
 
+    /**
+     * Autonomous Driving / Cinematics Pipeline:
+     * Generates a fully automated production plan for an imported asset (e.g. vehicle, character, prop)
+     * without requiring any manual user rigging, tagging, or camera positioning.
+     */
+    public void formulateAutonomousAssetSpec(final String userPrompt,
+                                            final String modelName,
+                                            final String modelCategory,
+                                            final DirectorCallback callback) {
+        if (callback == null) return;
+
+        if (!apiKeyManager.hasApiKey()) {
+            String msg = "DirectorAgent: Gemini API Key missing in Settings. Cannot run autonomous generation.";
+            VynaraLogger.e(msg);
+            callback.onError(msg);
+            return;
+        }
+
+        final String activeModel = apiKeyManager.getSelectedModel();
+        String systemInstruction = buildDirectorSystemInstruction();
+
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
+        promptBuilder.append("IMPORTED ASSET NAME: ").append(modelName).append("\n");
+        promptBuilder.append("INFERRED CATEGORY: ").append(modelCategory).append("\n");
+        promptBuilder.append("DIRECTIVE: Generate a high-speed, cinematic, photorealistic sequence. ")
+                     .append("If category is 'Vehicle', generate procedural road spline, guardrails, automated wheel rotation drivers ")
+                     .append("(angular velocity = linear speed / wheel radius), shrinkwrap ground sensors, rear-wheel low-angle camera framing, ")
+                     .append("and 180-degree optical shutter motion blur. No static poly placeholders.");
+
+        VynaraLogger.system("DirectorAgent: Formulating autonomous asset animation spec for [" + modelName + "]...");
+
+        apiClient.generateStructuredJson(
+                apiKeyManager.getApiKey(),
+                activeModel,
+                systemInstruction,
+                promptBuilder.toString(),
+                new ArrayList<>(),
+                new GeminiApiClient.ApiCallback<String>() {
+                    @Override
+                    public void onSuccess(String jsonResult) {
+                        try {
+                            String cleanJson = jsonResult.trim();
+                            if (cleanJson.startsWith("```json")) {
+                                cleanJson = cleanJson.substring(7);
+                            } else if (cleanJson.startsWith("```")) {
+                                cleanJson = cleanJson.substring(3);
+                            }
+                            if (cleanJson.endsWith("```")) {
+                                cleanJson = cleanJson.substring(0, cleanJson.length() - 3);
+                            }
+                            cleanJson = cleanJson.trim();
+
+                            JSONObject root = new JSONObject(cleanJson);
+                            AIDirectorSpec spec = AIDirectorSpec.fromJson(root, activeModel);
+
+                            VynaraLogger.system("DirectorAgent: Autonomous spec ready for [" + spec.getSceneType() + "].");
+                            callback.onSpecReady(spec);
+                        } catch (Exception e) {
+                            String err = "DirectorAgent: Failed to parse autonomous specification: " + e.getMessage();
+                            VynaraLogger.e(err, e);
+                            callback.onError(err);
+                        }
+                    }
+
+                    @Override
+                    public void onError(String errorMessage) {
+                        String err = "DirectorAgent: Google Gemini API error: " + errorMessage;
+                        VynaraLogger.e(err);
+                        callback.onError(err);
+                    }
+                }
+        );
+    }
+
     private String buildDirectorSystemInstruction() {
         return "You are the 3D Master Art Director & Spatial Architect (like Fable 5 / SKILL.md).\n" +
                 "YOUR ROLE:\n" +
                 "- You NEVER write Python code or Blender operators directly.\n" +
                 "- Your job is to analyze the user's prompt and reference images, and decompose the scene into a structured 4-Worker dynamic specification.\n" +
-                "- Never settle for generic primitives or cubes. Define aerodynamic curvatures, bevels, architectural cantilevers, and authentic wheel orientations.\n\n" +
+                "- Never settle for generic primitives or low-poly cubes. Define aerodynamic curvatures, bevels, architectural cantilevers, and authentic wheel orientations.\n\n" +
                 "CINEMATIC DIRECTIVES:\n" +
-                "1. Worker 1 (Structure): Define primary volume, chassis or building envelope, bevel radius (e.g. 0.08m), and whether subdivision surface is required.\n" +
-                "2. Worker 2 (Details & Hardware): If vehicle, specify 4 vertical wheels with Euler rotation (90 deg on X-axis), rims, and glass. If architecture, specify cantilever balconies, pool basin, and terrain. Props must snap to ground.\n" +
-                "3. Worker 3 (PBR Materials): Define Base Color, Metallic (0.0 to 1.0), Roughness (0.05 to 0.9), and Transmission Weight (0.9 for glass/water) conforming to Blender 4.2+ Principled BSDF.\n" +
-                "4. Worker 4 (Cinematics): Select focal length (35mm for wide architecture/scenes, 50mm for natural perspective, 85mm for hero products), depth of field f/1.8, and Sun elevation/azimuth with warm/cool lighting contrast.\n\n" +
+                "1. Worker 1 (Structure & Environment):\n" +
+                "   - Define primary volume, chassis, or building envelope.\n" +
+                "   - For driving/high-speed shots: define a procedural road ribbon with asphalt, curbs, steel guardrails, and street lamps along a path curve.\n" +
+                "   - Always specify bevel radius (e.g. 0.04m - 0.08m) and smooth shading.\n" +
+                "2. Worker 2 (Details, Kinematics & Rigging):\n" +
+                "   - If vehicle: autonomously identify/rig 4 vertical wheels (90 deg on X/Y axis), brake calipers, and chassis.\n" +
+                "   - Bind automated wheel spin drivers tied to forward displacement (rotation = distance / radius).\n" +
+                "   - Bind axle ground sensors (Shrinkwrap constraint targeting the road surface).\n" +
+                "3. Worker 3 (PBR Materials & Shaders):\n" +
+                "   - Conforming to Blender 4.2+ Principled BSDF.\n" +
+                "   - High-detail 4K asphalt with normal map pebble bump, roughness variations, and wet/dry bitumen specular.\n" +
+                "   - Metallic car paint with clearcoat, darkened glass transmission (0.9), and matte tire rubber.\n" +
+                "4. Worker 4 (Cinematics, Camera Optics & Lighting):\n" +
+                "   - Low-angle ground clearance camera (15cm off ground, positioned outside rear wheel arch pointing forward along car flank).\n" +
+                "   - Wide-angle focal length (18mm - 24mm) to amplify speed parallax.\n" +
+                "   - Depth of field locked to rear rim (f/2.8).\n" +
+                "   - Enable 180-degree optical motion blur (shutter = 0.5) to streak road lines and spin wheels.\n" +
+                "   - Low-horizon Sun lighting with rim-light highlights, lens flare, and AgX/Filmic color management.\n\n" +
                 "OUTPUT RAW STRICT JSON ONLY (NO MARKDOWN FENCES):\n" +
                 "{\n" +
                 "  \"sceneType\": \"string\",\n" +
@@ -137,29 +226,29 @@ public class DirectorAgent {
                 "  \"visualStyleNotes\": \"string\",\n" +
                 "  \"objectCategory\": \"vehicle | architecture | character | nature | prop\",\n" +
                 "  \"workers\": {\n" +
-                "    \"w1_structure\": \"Detailed structural guidelines with dimensions and bevel requirements\",\n" +
-                "    \"w2_details\": \"Sub-part hardware, wheel rotation (90 deg on X-axis), and prop placement\",\n" +
-                "    \"w3_materials\": \"PBR shader properties for hero surface, glass, and details\",\n" +
-                "    \"w4_cinematics\": \"Lighting rig and camera optics framing\"\n" +
+                "    \"w1_structure\": \"Structural guidelines, chassis envelope or procedural road curve with guardrails\",\n" +
+                "    \"w2_details\": \"Sub-part hardware, wheel spin drivers, shrinkwrap ground sensors, and props\",\n" +
+                "    \"w3_materials\": \"PBR shader properties: 4K asphalt, metallic paint, glass transmission, tire rubber\",\n" +
+                "    \"w4_cinematics\": \"Low ground clearance camera (18mm-24mm), rear-wheel lock, 180 deg motion blur, AgX sun lighting\"\n" +
                 "  },\n" +
                 "  \"camera\": {\n" +
-                "    \"focalLengthMm\": 50.0,\n" +
-                "    \"apertureFStop\": 1.8,\n" +
-                "    \"focusDistance\": 5.5,\n" +
-                "    \"position\": [0.0, -8.0, 3.2],\n" +
-                "    \"target\": [0.0, 0.0, 1.0]\n" +
+                "    \"focalLengthMm\": 20.0,\n" +
+                "    \"apertureFStop\": 2.8,\n" +
+                "    \"focusDistance\": 1.2,\n" +
+                "    \"position\": [0.95, -1.8, 0.25],\n" +
+                "    \"target\": [0.85, 1.5, 0.35]\n" +
                 "  },\n" +
                 "  \"lighting\": {\n" +
                 "    \"useVolumetrics\": true,\n" +
-                "    \"volumetricDensity\": 0.015,\n" +
-                "    \"sunElevation\": 25.0,\n" +
-                "    \"sunAzimuth\": -35.0,\n" +
-                "    \"sunIntensity\": 4.5,\n" +
+                "    \"volumetricDensity\": 0.012,\n" +
+                "    \"sunElevation\": 18.0,\n" +
+                "    \"sunAzimuth\": -45.0,\n" +
+                "    \"sunIntensity\": 5.5,\n" +
                 "    \"ambientColorHex\": \"#1A2530\"\n" +
                 "  },\n" +
                 "  \"palette\": {\n" +
-                "    \"primaryColorHex\": \"#2C3E50\",\n" +
-                "    \"secondaryColorHex\": \"#BDC3C7\",\n" +
+                "    \"primaryColorHex\": \"#D4AF37\",\n" +
+                "    \"secondaryColorHex\": \"#222222\",\n" +
                 "    \"accentColorHex\": \"#E74C3C\"\n" +
                 "  },\n" +
                 "  \"seeds\": {\n" +
@@ -184,29 +273,35 @@ public class DirectorAgent {
         }
 
         switch (workerIndex) {
-            case 1: // Worker 1: Core Structure
-                sb.append("\nTASK: WORKER 1 (STRUCTURE & HULL)\n")
-                  .append("- Generate ONLY the primary structural geometry.\n")
-                  .append("- Always add a BEVEL modifier (width=0.04, segments=3) and enable smooth shading (`bpy.ops.object.shade_smooth()`).\n")
+            case 1: // Worker 1: Core Structure & Procedural Environment
+                sb.append("\nTASK: WORKER 1 (STRUCTURE & ENVIRONMENT)\n")
+                  .append("- Generate primary structural geometry or procedural road spline with curbs, barrier guardrail, and lamp poles.\n")
+                  .append("- If car: build aerodynamic chassis envelope or load imported asset root.\n")
+                  .append("- Always add BEVEL modifier (width=0.04, segments=3) and enable smooth shading (`bpy.ops.object.shade_smooth()`).\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
-            case 2: // Worker 2: Details & Sub-parts
-                sb.append("\nTASK: WORKER 2 (DETAILS & HARDWARE)\n")
-                  .append("- Generate detailed sub-assemblies (e.g. wheels, windows, doors, trim, props).\n")
-                  .append("- CRITICAL: If wheels or cylinders on an axle, rotate 90 degrees on X/Y axis (`rotation=(0, math.radians(90), 0)`). Never leave wheels standing upright on Z.\n")
+            case 2: // Worker 2: Details, Hardware & Autonomous Rigging
+                sb.append("\nTASK: WORKER 2 (DETAILS, HARDWARE & RIGGING)\n")
+                  .append("- Generate detailed sub-assemblies (e.g. 4 wheels rotated 90 deg, brake calipers, rims, glass, road barriers).\n")
+                  .append("- For driving shots: automatically calculate wheel radius and add rotational drivers (rotation = distance / radius).\n")
+                  .append("- Add ground shrinkwrap constraint to project wheel axles onto the road surface.\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
             case 3: // Worker 3: PBR Materials & Shaders
                 sb.append("\nTASK: WORKER 3 (PBR MATERIALS)\n")
-                  .append("- Configure Principled BSDF materials using Blender 4.2+ socket names (e.g. 'Transmission Weight').\n")
-                  .append("- Add metallic car paint, roughness maps, or glass transmission where appropriate.\n")
+                  .append("- Configure Principled BSDF materials using Blender 4.2+ socket names (e.g. 'Transmission Weight', 'Roughness', 'Metallic').\n")
+                  .append("- Road: 4K asphalt procedural texture with pebble bump and roughness variations.\n")
+                  .append("- Vehicle: Metallic car paint with clearcoat, matte rubber on tires, and chrome on rims.\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
-            case 4: // Worker 4: Cinematics & Lighting
+            case 4: // Worker 4: Cinematics, Optical Motion Blur & Lighting
             default:
-                sb.append("\nTASK: WORKER 4 (LIGHTING & CAMERA)\n")
-                  .append("- Configure the Camera with focal length and depth of field.\n")
-                  .append("- Add Sun light and key/fill lighting, then export GLB and render Cycles preview.\n")
+                sb.append("\nTASK: WORKER 4 (CINEMATICS, MOTION BLUR & LIGHTING)\n")
+                  .append("- Position wide-angle camera (18mm - 24mm) low to the ground (0.2m) beside rear-left wheel, looking forward.\n")
+                  .append("- Parent camera to vehicle chassis so it tracks perfectly with movement.\n")
+                  .append("- Configure Depth of Field (f/2.8) locked on the rear wheel.\n")
+                  .append("- CRITICAL: Enable Motion Blur in render settings (`scene.render.use_motion_blur = True`, shutter=0.5) to produce authentic speed streaks.\n")
+                  .append("- Add low-elevation Sun light (18-25 deg) for golden rim highlights, enable AgX color management, and render MP4 preview.\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
         }
