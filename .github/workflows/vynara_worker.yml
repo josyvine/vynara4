@@ -218,12 +218,11 @@ jobs:
               flags=re.MULTILINE
           )
 
-          # Auto-Repair 8: Redirect FBX imports to GLTF if converted or if model exists as GLB
+          # Auto-Repair 8: Redirect FBX imports to GLTF if converted or if model exists as GLB (Safe Quote Preservation)
           has_glb = os.path.exists('input_model.glb') or os.path.exists('inputs/input_model.glb')
           if has_glb:
               bpy_script = bpy_script.replace("bpy.ops.import_scene.fbx(", "bpy.ops.import_scene.gltf(")
-              bpy_script = re.sub(r"(['\"][^'\"]*?input_model)\.fbx(['\"])", r"\1.glb\2", bpy_script)
-              bpy_script = re.sub(r"(['\"][^'\"]*?)\.fbx(['\"])", r"input_model.glb\2", bpy_script)
+              bpy_script = re.sub(r"(['\"])([^'\"\n]*?)\.fbx(['\"])", r"\1\2.glb\3", bpy_script)
               print("Auto-Repair: Successfully redirected scene FBX import to converted GLB format.")
 
           # Auto-Repair 9: SCOPED Texture Type Fix (Never corrupt light or curve types!)
