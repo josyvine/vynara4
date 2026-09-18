@@ -281,6 +281,21 @@ jobs:
                   "except Exception as pe: print(f'Blend save note: {pe}')\n"
               )
 
+          # Auto-Repair 13: Fix Background shader socket name ('Color' -> 'Background')
+          bpy_script = re.sub(r"(\.outputs\[['\"])Color(['\"]\]\s*,\s*[^,\n]*?inputs\[['\"])Surface(['\"]\])", r"\1Background\2Surface\3", bpy_script)
+          bpy_script = re.sub(r"(bg(?:_node)?\.outputs\[['\"])Color(['\"]\])", r"\1Background\2", bpy_script)
+
+          # Auto-Repair 14: Neutralize read-only sequencer_colorspace_settings assignment
+          bpy_script = re.sub(r"^[ \t]*.*?\.sequencer_colorspace_settings\s*=.*$", "pass", bpy_script, flags=re.MULTILINE)
+
+          # Auto-Repair 15: Fix scene.exposure -> scene.view_settings.exposure
+          bpy_script = re.sub(r"(\bscene)\.exposure\b", r"\1.view_settings.exposure", bpy_script)
+
+          # Auto-Repair 16: Additional Principled BSDF socket link protections
+          bpy_script = re.sub(r"inputs\[['\"]Transmission['\"]\]", "inputs['Transmission Weight']", bpy_script)
+          bpy_script = re.sub(r"inputs\[['\"]Subsurface['\"]\]", "inputs['Subsurface Weight']", bpy_script)
+          bpy_script = re.sub(r"inputs\[['\"]Specular['\"]\]", "inputs['Specular IOR Level']", bpy_script)
+
           with open('run_task.py', 'w', encoding='utf-8') as f:
               f.write(bpy_script)
 
