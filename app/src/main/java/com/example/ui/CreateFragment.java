@@ -39,6 +39,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class CreateFragment extends Fragment {
 
@@ -230,6 +231,11 @@ public class CreateFragment extends Fragment {
         Button btnGenerate = view.findViewById(R.id.btn_create_generate);
         if (btnGenerate != null) {
             btnGenerate.setOnClickListener(v -> {
+                // Ensure runtime active asset is refreshed
+                if (currentActiveAsset == null && runtime != null) {
+                    currentActiveAsset = runtime.getActiveSelectedAsset();
+                }
+
                 String prompt = etPrompt.getText().toString().trim();
 
                 // If an asset is loaded, construct intelligent automotive / action direction prompt
@@ -279,10 +285,15 @@ public class CreateFragment extends Fragment {
 
                 List<String> refUrisStrList = new ArrayList<>();
 
-                // If an active imported model exists, prepend it to reference list with prefix
+                // If an active imported model exists, verify file existence before binding
                 if (currentActiveAsset != null && currentActiveAsset.getFilePath() != null) {
-                    refUrisStrList.add("model:" + currentActiveAsset.getFilePath());
-                    VynaraLogger.system("CreateFragment: Bound active asset [" + currentActiveAsset.getName() + "] to production payload.");
+                    File assetFile = new File(currentActiveAsset.getFilePath());
+                    if (assetFile.exists() && assetFile.length() > 0) {
+                        refUrisStrList.add("model:" + currentActiveAsset.getFilePath());
+                        VynaraLogger.system("CreateFragment: Bound active asset [" + currentActiveAsset.getName() + "] (" + assetFile.length() + " bytes) to production payload.");
+                    } else {
+                        VynaraLogger.w("CreateFragment: Active asset file is missing or empty on disk: " + currentActiveAsset.getFilePath());
+                    }
                 }
 
                 // If custom script is attached, cache it locally and append
@@ -338,7 +349,7 @@ public class CreateFragment extends Fragment {
             etPrompt.setHint("Direct action for " + name + " (e.g. 'High speed driving, low rear wheel angle, motion blur')...");
 
             // Auto-configure appropriate style for vehicles
-            if (active.getCategory() != null && active.getCategory().toUpperCase().contains("VEHICLE")) {
+            if (active.getCategory() != null && active.getCategory().toUpperCase(Locale.US).contains("VEHICLE")) {
                 if (spinnerStyle != null && spinnerStyle.getCount() > 0) {
                     spinnerStyle.setSelection(0); // Photorealistic
                 }
@@ -490,7 +501,13 @@ public class CreateFragment extends Fragment {
                 cacheFolder.mkdirs();
             }
 
-            File destFile = new File(cacheFolder, "ref_" + System.currentTimeMillis() + "_" + (int)(Math.random() * 1000) + ".jpg");
+            String originalName = getFileNameFromUri(contentUri);
+            String ext = ".jpg";
+            if (originalName != null && originalName.contains(".")) {
+                ext = originalName.substring(originalName.lastIndexOf('.')).toLowerCase(Locale.US);
+            }
+
+            File destFile = new File(cacheFolder, "ref_" + System.currentTimeMillis() + "_" + (int)(Math.random() * 1000) + ext);
 
             try (InputStream in = context.getContentResolver().openInputStream(contentUri);
                  FileOutputStream out = new FileOutputStream(destFile)) {
