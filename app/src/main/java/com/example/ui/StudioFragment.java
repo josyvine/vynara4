@@ -2,6 +2,7 @@ package com.example.ui;
 
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
+import android.view.GestureDetector;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -53,6 +54,7 @@ public class StudioFragment extends Fragment {
     private android.os.Handler animHandler;
     private Runnable animRunnable;
     private ScaleGestureDetector scaleGestureDetector;
+    private GestureDetector doubleTapDetector;
 
     private File currentRenderImageFile = null;
 
@@ -91,7 +93,7 @@ public class StudioFragment extends Fragment {
         glSurfaceView.setRenderer(renderer);
         glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
 
-        // Enable Touch Viewport Camera Orbit Navigation with Pinch-to-Zoom
+        // Enable Touch Viewport Camera Orbit Navigation with Pinch-to-Zoom & Double-Tap Re-center
         setupViewportTouchOrbitGesture();
 
         updateStudioStatsUI();
@@ -191,14 +193,22 @@ public class StudioFragment extends Fragment {
             });
         }
 
-        // Magnifying glass tool icon: Focus and re-center camera on 3D subject
-        View btnZoom = view.findViewById(R.id.btn_tool_zoom);
-        if (btnZoom != null) {
-            btnZoom.setOnClickListener(v -> {
-                autoFrameHeroOrScene();
-                Toast.makeText(getContext(), "Camera centered on 3D subject", Toast.LENGTH_SHORT).show();
-            });
-        }
+        // Dynamic safe lookup for zoom/focus tool button if present in layout XML
+        try {
+            int zoomResId = getResources().getIdentifier("btn_tool_zoom", "id", requireContext().getPackageName());
+            if (zoomResId == 0) {
+                zoomResId = getResources().getIdentifier("btn_tool_focus", "id", requireContext().getPackageName());
+            }
+            if (zoomResId != 0) {
+                View btnZoom = view.findViewById(zoomResId);
+                if (btnZoom != null) {
+                    btnZoom.setOnClickListener(v -> {
+                        autoFrameHeroOrScene();
+                        Toast.makeText(getContext(), "Camera centered on 3D subject", Toast.LENGTH_SHORT).show();
+                    });
+                }
+            }
+        } catch (Throwable ignored) {}
 
         View btnHierarchy = view.findViewById(R.id.btn_tool_hierarchy);
         if (btnHierarchy != null) {
@@ -287,10 +297,20 @@ public class StudioFragment extends Fragment {
     }
 
     /**
-     * Touch Event Handler: Translates touch gestures into spherical camera orbit rotation and pinch zoom.
+     * Touch Event Handler: Translates touch gestures into spherical camera orbit rotation,
+     * pinch zoom, and double-tap subject auto-centering.
      */
     private void setupViewportTouchOrbitGesture() {
         if (glSurfaceView == null) return;
+
+        doubleTapDetector = new GestureDetector(requireContext(), new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                autoFrameHeroOrScene();
+                Toast.makeText(getContext(), "Camera centered on 3D subject", Toast.LENGTH_SHORT).show();
+                return true;
+            }
+        });
 
         scaleGestureDetector = new ScaleGestureDetector(requireContext(), new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
@@ -322,6 +342,7 @@ public class StudioFragment extends Fragment {
             public boolean onTouch(View v, MotionEvent event) {
                 if (event == null) return false;
 
+                doubleTapDetector.onTouchEvent(event);
                 scaleGestureDetector.onTouchEvent(event);
 
                 int action = event.getActionMasked();
