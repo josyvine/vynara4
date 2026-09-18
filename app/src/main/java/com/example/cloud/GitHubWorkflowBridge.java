@@ -38,7 +38,8 @@ import okhttp3.ResponseBody;
 
 public class GitHubWorkflowBridge {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
-    private static final int DEFAULT_TIMEOUT_SECONDS = 60;
+    // Increased to 300 seconds (5 minutes) to comfortably handle multi-megabyte 3D model base64 payloads
+    private static final int DEFAULT_TIMEOUT_SECONDS = 300;
     private static final long POLLING_INTERVAL_MS = 4000; // 4 seconds interval
     private static final long MAX_POLLING_DURATION_MS = 600000; // 10 minutes timeout (supports high-fidelity renders)
     private static final int MAX_ARTIFACT_RETRY_ATTEMPTS = 8; // 8 retries (20s window for run-specific artifact indexing)
@@ -102,6 +103,7 @@ public class GitHubWorkflowBridge {
                 .connectTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .readTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .writeTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
                 .build();
         this.mainHandler = new Handler(Looper.getMainLooper());
     }
@@ -395,8 +397,10 @@ public class GitHubWorkflowBridge {
             httpClient.newCall(putReq).enqueue(new Callback() {
                 @Override
                 public void onFailure(Call call, IOException e) {
-                    VynaraLogger.e("GitHubWorkflowBridge: Model file upload failed: " + e.getMessage());
-                    executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
+                    String err = "Model file upload failed: " + e.getMessage();
+                    VynaraLogger.e("GitHubWorkflowBridge: " + err);
+                    // CRITICAL GUARD: Abort immediately. Do not dispatch workflow if model upload failed!
+                    mainHandler.post(() -> callback.onError(err + " (Upload timed out or was interrupted)"));
                 }
 
                 @Override
@@ -404,18 +408,23 @@ public class GitHubWorkflowBridge {
                     try {
                         if (response.isSuccessful() || response.code() == 200 || response.code() == 201) {
                             VynaraLogger.system("GitHubWorkflowBridge: Successfully uploaded 3D model to repository (" + targetPath + ")");
+                            // Only proceed to workflow dispatch upon successful upload
+                            executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
                         } else {
-                            VynaraLogger.w("GitHubWorkflowBridge: Model upload returned HTTP " + response.code() + ", proceeding with dispatch");
+                            String err = "Model upload rejected by GitHub [HTTP " + response.code() + "]: " + response.message();
+                            VynaraLogger.e("GitHubWorkflowBridge: " + err);
+                            // CRITICAL GUARD: Stop immediately if GitHub rejected the file
+                            mainHandler.post(() -> callback.onError(err));
                         }
                     } finally {
                         response.close();
                     }
-                    executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, targetPath, callback);
                 }
             });
         } catch (Exception ex) {
-            VynaraLogger.e("GitHubWorkflowBridge: Error preparing model upload: " + ex.getMessage(), ex);
-            executeDispatchCall(repository, personalAccessToken, eventType, assetId, bpyScript, null, callback);
+            String err = "Error preparing model upload: " + ex.getMessage();
+            VynaraLogger.e("GitHubWorkflowBridge: " + err, ex);
+            mainHandler.post(() -> callback.onError(err));
         }
     }
 
