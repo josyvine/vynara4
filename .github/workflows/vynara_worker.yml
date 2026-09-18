@@ -36,10 +36,13 @@ jobs:
       # Step 4: Ingest and Auto-Convert Uploaded 3D Models (Resolves ASCII FBX limitation)
       - name: Ingest and Prepare 3D Model
         run: |
+          mkdir -p inputs
           MODEL_PATH="${{ github.event.client_payload.model_path }}"
+
           if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
             EXT="${MODEL_PATH##*.}"
             cp "$MODEL_PATH" "input_model.$EXT"
+            cp "$MODEL_PATH" "inputs/input_model.$EXT" 2>/dev/null || true
             echo "Ingested input model from $MODEL_PATH -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
           elif [ -d "inputs" ]; then
             FOUND_FILE=$(find inputs -type f \( -name "*.fbx" -o -name "*.glb" -o -name "*.gltf" -o -name "*.obj" \) | head -n 1)
@@ -50,23 +53,24 @@ jobs:
             fi
           fi
 
-          # Autonomous format inspection: Detect ASCII FBX and auto-convert to standard GLB
-          if [ -f "input_model.fbx" ]; then
-            if ! head -c 20 "input_model.fbx" | grep -q "Kaydara FBX Binary"; then
-              echo "Detected ASCII FBX file format (unsupported by Blender natively). Auto-converting via assimp..."
-              assimp export "input_model.fbx" "input_model.glb"
-              if [ -f "input_model.glb" ] && [ -s "input_model.glb" ]; then
-                echo "Successfully converted ASCII FBX -> input_model.glb ($(stat -c%s input_model.glb) bytes)"
-                rm "input_model.fbx"
+          # Autonomous format inspection: Detect ASCII FBX across root and inputs/ and auto-convert to standard GLB
+          for fbx_candidate in "input_model.fbx" "inputs/input_model.fbx"; do
+            if [ -f "$fbx_candidate" ]; then
+              if ! head -c 20 "$fbx_candidate" | grep -q "Kaydara FBX Binary"; then
+                echo "Detected ASCII FBX at $fbx_candidate (unsupported natively by Blender). Auto-converting via assimp..."
+                assimp export "$fbx_candidate" "input_model.glb"
+                if [ -f "input_model.glb" ] && [ -s "input_model.glb" ]; then
+                  echo "Successfully converted ASCII FBX -> input_model.glb ($(stat -c%s input_model.glb) bytes)"
+                  cp "input_model.glb" "inputs/input_model.glb"
+                  rm -f "$fbx_candidate"
+                fi
               else
-                echo "Assimp conversion note: retaining original input_model.fbx"
+                echo "Confirmed Binary FBX format for $fbx_candidate. Ready for native Blender import."
               fi
-            else
-              echo "Confirmed Binary FBX format. Ready for native Blender import."
             fi
-          fi
+          done
 
-          ls -la input_model.* 2>/dev/null || echo "No uploaded 3D model detected. Running pure procedural pipeline."
+          ls -la input_model.* inputs/ 2>/dev/null || echo "No uploaded 3D model detected. Running pure procedural pipeline."
 
       # Step 5: Execute Blender Python Script with Auto-Repair, Input Model Ingestion & Motion Blur
       - name: Execute Blender Python Script
@@ -102,6 +106,9 @@ jobs:
                           try:
                               with open('input_model.glb', 'wb') as mf:
                                   mf.write(base64.b64decode(input_model_b64))
+                              os.makedirs('inputs', exist_ok=True)
+                              with open('inputs/input_model.glb', 'wb') as mf2:
+                                  mf2.write(base64.b64decode(input_model_b64))
                               print("Successfully unpacked user input 3D model: input_model.glb")
                           except Exception as me:
                               print(f"Warning unpacking user model: {me}")
@@ -189,7 +196,37 @@ jobs:
           bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'BLENDER_EEVEE_NEXT'")
           bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"BLENDER_EEVEE_NEXT"')
 
-          # Auto-Repair 6: SCOPED Texture Type Fix (Never corrupt light or curve types!)
+          # Auto-Repair 6: Blender 4.2+ AgX Color Management Look Enums (Fixes "High Contrast" enum error)
+          look_fixes = [
+              (r"view_settings\.look\s*=\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Medium Low Contrast['\"]", "view_settings.look = 'AgX - Medium Low Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Low Contrast['\"]", "view_settings.look = 'AgX - Low Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Very Low Contrast['\"]", "view_settings.look = 'AgX - Very Low Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Base Contrast['\"]", "view_settings.look = 'AgX - Base Contrast'"),
+              (r"view_settings\.look\s*=\s*['\"]Punchy['\"]", "view_settings.look = 'AgX - Punchy'")
+          ]
+          for pattern, replacement in look_fixes:
+              bpy_script = re.sub(pattern, replacement, bpy_script)
+
+          # Auto-Repair 7: Wrap view_settings.look in try-except block to ensure immunity from look enum failures
+          bpy_script = re.sub(
+              r"^([ \t]*)(.*view_settings\.look\s*=.*)$",
+              r"\1try:\n\1    \2\n\1except Exception as _look_err: print(f'View settings look notice: {_look_err}')",
+              bpy_script,
+              flags=re.MULTILINE
+          )
+
+          # Auto-Repair 8: Redirect FBX imports to GLTF if converted or if model exists as GLB
+          has_glb = os.path.exists('input_model.glb') or os.path.exists('inputs/input_model.glb')
+          if has_glb:
+              bpy_script = bpy_script.replace("bpy.ops.import_scene.fbx(", "bpy.ops.import_scene.gltf(")
+              bpy_script = re.sub(r"(['\"][^'\"]*?input_model)\.fbx(['\"])", r"\1.glb\2", bpy_script)
+              bpy_script = re.sub(r"(['\"][^'\"]*?)\.fbx(['\"])", r"input_model.glb\2", bpy_script)
+              print("Auto-Repair: Successfully redirected scene FBX import to converted GLB format.")
+
+          # Auto-Repair 9: SCOPED Texture Type Fix (Never corrupt light or curve types!)
           valid_tex = {'NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'}
           def fix_texture_type(m):
               prefix = m.group(1)
@@ -200,7 +237,7 @@ jobs:
               return prefix + tex_val + suffix
           bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", fix_texture_type, bpy_script)
 
-          # Auto-Repair 7: Ensure standard GLTF/GLB export exists with baked modifiers
+          # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
               bpy_script += (
                   "\n\n# Standard Model Exporter with Baked Modifiers\n"
@@ -212,7 +249,7 @@ jobs:
                   "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
               )
 
-          # Auto-Repair 8: Production Denoised Cycles Snapshot (16 samples for rapid cloud execution)
+          # Auto-Repair 11: Production Denoised Cycles Snapshot (16 samples for rapid cloud execution)
           if 'output/render.png' not in bpy_script:
               bpy_script += (
                   "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
@@ -234,7 +271,7 @@ jobs:
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
               )
 
-          # Auto-Repair 9: Project State Checkpoint for Option B2 Interactive Sessions
+          # Auto-Repair 12: Project State Checkpoint for Option B2 Interactive Sessions
           if 'bpy.ops.wm.save_as_mainfile' not in bpy_script:
               bpy_script += (
                   "\n\n# Save Checkpoint Project for Interactive Iteration\n"
