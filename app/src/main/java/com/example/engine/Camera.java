@@ -9,7 +9,7 @@ public class Camera {
 
     private float fov = 45f;
     private float near = 0.1f;
-    private float far = 500f; // Extended far plane to prevent large scenes (villas, villages) from clipping
+    private float far = 1500f; // Extended far clipping plane for large environments (highways, landscapes)
     private int viewportWidth = 1080;
     private int viewportHeight = 1920;
 
@@ -40,16 +40,19 @@ public class Camera {
     }
 
     public void setEye(float x, float y, float z) {
+        if (Float.isNaN(x) || Float.isNaN(y) || Float.isNaN(z)) return;
         eye[0] = x; eye[1] = y; eye[2] = z;
         updateViewMatrix();
     }
 
     public void setTarget(float x, float y, float z) {
+        if (Float.isNaN(x) || Float.isNaN(y) || Float.isNaN(z)) return;
         target[0] = x; target[1] = y; target[2] = z;
         updateViewMatrix();
     }
 
     public void setUp(float x, float y, float z) {
+        if (Float.isNaN(x) || Float.isNaN(y) || Float.isNaN(z)) return;
         up[0] = x; up[1] = y; up[2] = z;
         updateViewMatrix();
     }
@@ -67,12 +70,31 @@ public class Camera {
 
     /**
      * Modulates current camera distance toward or away from the target.
-     * factor > 1 zooms in (decreases distance), factor < 1 zooms out.
+     * Amplified for responsive mobile pinch-to-zoom gesture scaling.
      */
     public void zoom(float factor) {
-        if (factor <= 0.001f) return;
+        if (factor <= 0.0001f || Float.isNaN(factor) || Float.isInfinite(factor)) return;
         float currentDist = getDistance();
-        float newDist = Math.max(1.0f, Math.min(300.0f, currentDist / factor));
+
+        // Amplify touch gesture delta for immediate zoom response
+        float sensitivityFactor = (factor > 1.0f) 
+                ? 1.0f + (factor - 1.0f) * 1.5f 
+                : 1.0f - (1.0f - factor) * 1.5f;
+
+        if (sensitivityFactor <= 0.05f) sensitivityFactor = 0.05f;
+
+        float newDist = currentDist / sensitivityFactor;
+        newDist = Math.max(0.1f, Math.min(1500.0f, newDist));
+        setDistance(newDist);
+    }
+
+    /**
+     * Direct distance delta adjustment (for stepped zooming).
+     */
+    public void zoomDelta(float delta) {
+        if (Float.isNaN(delta)) return;
+        float currentDist = getDistance();
+        float newDist = Math.max(0.1f, Math.min(1500.0f, currentDist + delta));
         setDistance(newDist);
     }
 
@@ -83,17 +105,20 @@ public class Camera {
         float dx = eye[0] - target[0];
         float dy = eye[1] - target[1];
         float dz = eye[2] - target[2];
-        return (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        float dist = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return Float.isNaN(dist) ? 5.0f : dist;
     }
 
     /**
      * Scales the eye position relative to the target to achieve the specified distance.
      */
     public void setDistance(float newDistance) {
+        if (Float.isNaN(newDistance) || newDistance < 0.1f) newDistance = 0.1f;
         float currentDist = getDistance();
-        if (currentDist < 0.0001f) {
+
+        if (currentDist < 0.001f) {
             eye[0] = target[0];
-            eye[1] = target[1] + 4.0f;
+            eye[1] = target[1] + 2.0f;
             eye[2] = target[2] + newDistance;
             updateViewMatrix();
             return;
@@ -110,6 +135,8 @@ public class Camera {
      * Performs a stable spherical orbit rotation around the look target without gimbal lock.
      */
     public void orbit(float deltaYaw, float deltaPitch) {
+        if (Float.isNaN(deltaYaw) || Float.isNaN(deltaPitch)) return;
+
         float relX = eye[0] - target[0];
         float relY = eye[1] - target[1];
         float relZ = eye[2] - target[2];
@@ -138,6 +165,8 @@ public class Camera {
      * Translates both camera eye and look target across the viewport plane.
      */
     public void pan(float deltaX, float deltaY) {
+        if (Float.isNaN(deltaX) || Float.isNaN(deltaY)) return;
+
         float[] forward = new float[] { target[0] - eye[0], target[1] - eye[1], target[2] - eye[2] };
         float fLen = (float) Math.sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
         if (fLen > 0.001f) {
@@ -167,7 +196,7 @@ public class Camera {
     }
 
     /**
-     * Resets camera to standard viewport default perspective.
+     * Resets camera to standard viewport perspective.
      */
     public void reset() {
         eye[0] = 0f; eye[1] = 4f; eye[2] = 8f;
@@ -177,7 +206,7 @@ public class Camera {
     }
 
     /**
-     * Phase 16 Alignment: Frames camera eye and look target around a 3D bounding box.
+     * Frames camera eye and look target cleanly around a 3D bounding box.
      */
     public void frameBounds(float[] minBounds, float[] maxBounds) {
         if (minBounds == null || maxBounds == null || minBounds.length < 3 || maxBounds.length < 3) return;
@@ -186,22 +215,22 @@ public class Camera {
         float centerY = (minBounds[1] + maxBounds[1]) / 2f;
         float centerZ = (minBounds[2] + maxBounds[2]) / 2f;
 
-        float sizeX = maxBounds[0] - minBounds[0];
-        float sizeY = maxBounds[1] - minBounds[1];
-        float sizeZ = maxBounds[2] - minBounds[2];
+        float sizeX = Math.abs(maxBounds[0] - minBounds[0]);
+        float sizeY = Math.abs(maxBounds[1] - minBounds[1]);
+        float sizeZ = Math.abs(maxBounds[2] - minBounds[2]);
         float maxExtent = Math.max(sizeX, Math.max(sizeY, sizeZ));
         if (maxExtent < 0.1f) maxExtent = 2.0f;
 
         float distance = (float) (maxExtent / Math.tan(Math.toRadians(fov / 2.0)));
-        distance = Math.max(3.0f, distance * 1.5f);
+        distance = Math.max(4.0f, distance * 1.3f);
 
-        // Dynamically push far clipping plane if the framed scene requires greater distance
+        // Dynamically expand far clipping plane if the framed scene is large
         if (distance * 2.5f > far) {
             setClippingPlanes(near, distance * 3.0f);
         }
 
         setTarget(centerX, centerY, centerZ);
-        setEye(centerX, centerY + distance * 0.4f, centerZ + distance);
+        setEye(centerX, centerY + distance * 0.35f, centerZ + distance * 0.85f);
     }
 
     public float[] getEye() { return eye; }
