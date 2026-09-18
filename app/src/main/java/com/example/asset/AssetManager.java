@@ -8,9 +8,11 @@ import android.os.Looper;
 import com.example.utils.VynaraLogger;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -37,11 +39,12 @@ public class AssetManager {
     }
 
     public AssetManager() {
-        // Phase 15 Alignment: Purged hardcoded mock sample assets.
-        // The asset library is populated dynamically from generated 3D files stored locally.
+        // Extended timeouts for streaming multi-megabyte 3D files reliably
         this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(180, TimeUnit.SECONDS)
+                .writeTimeout(180, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
                 .build();
         this.mainHandler = new Handler(Looper.getMainLooper());
     }
@@ -125,7 +128,7 @@ public class AssetManager {
 
     /**
      * Imports a user-selected 3D model directly from an Android content Uri into
-     * internal app storage, infers metadata, and registers it into the active catalog.
+     * internal app storage, infers metadata, inspects header format, and registers it into the catalog.
      */
     public Asset importAssetFromUri(Context context, Uri uri, String fileName) {
         if (context == null || uri == null) {
@@ -179,6 +182,15 @@ public class AssetManager {
             String format = inferFormat(safeFileName);
             String fileSizeStr = formatFileSize(destFile.length());
 
+            // Header Inspection for FBX format verification
+            if ("FBX".equalsIgnoreCase(format)) {
+                if (isBinaryFbx(destFile)) {
+                    VynaraLogger.system("AssetManager: Confirmed Binary FBX format for " + destFile.getName());
+                } else {
+                    VynaraLogger.system("AssetManager: Detected ASCII FBX format for " + destFile.getName() + " (will be auto-normalized to GLB in cloud pipeline)");
+                }
+            }
+
             Asset asset;
             try {
                 asset = new Asset(id, name, category, format, fileSizeStr, destFile.getAbsolutePath(), 0);
@@ -199,6 +211,23 @@ public class AssetManager {
         }
     }
 
+    /**
+     * Inspects the file header to check if an FBX file is standard Binary (starts with "Kaydara FBX Binary")
+     * or unsupported plaintext ASCII FBX.
+     */
+    private boolean isBinaryFbx(File file) {
+        if (file == null || !file.exists() || file.length() < 21) return false;
+        try (InputStream fis = new FileInputStream(file)) {
+            byte[] header = new byte[23];
+            int read = fis.read(header);
+            if (read >= 18) {
+                String prefix = new String(header, 0, Math.min(read, 20), StandardCharsets.US_ASCII);
+                return prefix.startsWith("Kaydara FBX Binary");
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
     private String sanitizeDisplayName(String fileName) {
         String base = fileName;
         int dot = base.lastIndexOf('.');
@@ -212,7 +241,9 @@ public class AssetManager {
         String lower = fileName.toLowerCase(Locale.ROOT);
         if (lower.contains("car") || lower.contains("auto") || lower.contains("vehicle") ||
             lower.contains("truck") || lower.contains("sedan") || lower.contains("coupe") ||
-            lower.contains("motor") || lower.contains("bmw") || lower.contains("audi")) {
+            lower.contains("motor") || lower.contains("bmw") || lower.contains("audi") ||
+            lower.contains("r8") || lower.contains("porsche") || lower.contains("ferrari") ||
+            lower.contains("lambo") || lower.contains("mercedes") || lower.contains("ford")) {
             return "Vehicle";
         } else if (lower.contains("char") || lower.contains("hero") || lower.contains("biped") ||
                    lower.contains("human") || lower.contains("person") || lower.contains("man") ||
