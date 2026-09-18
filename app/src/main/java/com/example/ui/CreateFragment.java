@@ -30,6 +30,8 @@ import com.example.MainActivity;
 import com.example.R;
 import com.example.ai.ApiKeyManager;
 import com.example.ai.protocol.AIPipelineMode;
+import com.example.asset.Asset;
+import com.example.runtime.ProjectRuntime;
 import com.example.utils.VynaraLogger;
 
 import java.io.File;
@@ -53,6 +55,10 @@ public class CreateFragment extends Fragment {
     private ActivityResultLauncher<String> imagePickerLauncher;
     private ActivityResultLauncher<String> scriptPickerLauncher;
     private ActivityResultLauncher<String> permissionLauncher;
+
+    // Bridges the logical gap: binds selected asset from Assets/Studio directly into generation
+    private ProjectRuntime runtime;
+    private Asset currentActiveAsset = null;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -114,6 +120,12 @@ public class CreateFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
+        if (getActivity() instanceof MainActivity) {
+            runtime = ((MainActivity) getActivity()).getProjectRuntime();
+        } else {
+            runtime = ProjectRuntime.getInstance(requireContext());
+        }
+
         etPrompt = view.findViewById(R.id.et_prompt);
         tvReferenceCount = view.findViewById(R.id.tv_reference_count);
         tvToggleAdvanced = view.findViewById(R.id.tv_toggle_advanced);
@@ -171,17 +183,21 @@ public class CreateFragment extends Fragment {
             btnUploadScript.setOnClickListener(v -> openScriptPicker());
         }
 
-        // Tap reference badge to clear images or script
+        // Tap reference badge to clear images, script, or active model
         if (tvReferenceCount != null) {
             tvReferenceCount.setOnClickListener(v -> {
-                if (!selectedImageUris.isEmpty() || selectedScriptUri != null) {
+                if (!selectedImageUris.isEmpty() || selectedScriptUri != null || currentActiveAsset != null) {
                     selectedImageUris.clear();
                     selectedScriptUri = null;
                     selectedScriptFileName = null;
+                    currentActiveAsset = null;
+                    if (runtime != null) {
+                        runtime.setActiveSelectedAsset(null);
+                    }
                     etPrompt.setHint("Describe your 3D vision, structure, or mood...");
                     updateReferenceUI();
-                    VynaraLogger.system("CreateFragment: Cleared all attachments.");
-                    Toast.makeText(getContext(), "Attachments cleared", Toast.LENGTH_SHORT).show();
+                    VynaraLogger.system("CreateFragment: Cleared all attachments and active asset.");
+                    Toast.makeText(getContext(), "Attachments & model cleared", Toast.LENGTH_SHORT).show();
                 }
             });
         }
@@ -207,13 +223,21 @@ public class CreateFragment extends Fragment {
         setupPresetButton(view, R.id.preset_sofa, "Create a modern luxury leather sofa with realistic cushion seams, metallic legs, and wood trim.");
         setupPresetButton(view, R.id.preset_village, "Create a high-detail tropical village environment with wooden huts, sand terrain, palm trees, and ocean shoreline.");
 
+        // Check and sync any active asset selected in AssetsFragment or Studio
+        syncActiveAssetFromRuntime();
+
         // Generate button with Strict Pre-Flight Validation (ZERO Silent Fallback)
         Button btnGenerate = view.findViewById(R.id.btn_create_generate);
         if (btnGenerate != null) {
             btnGenerate.setOnClickListener(v -> {
                 String prompt = etPrompt.getText().toString().trim();
 
-                if (selectedScriptUri != null) {
+                // If an asset is loaded, construct intelligent automotive / action direction prompt
+                if (currentActiveAsset != null) {
+                    if (prompt.isEmpty()) {
+                        prompt = "Cinematic high-speed driving shot of " + currentActiveAsset.getName() + " tearing down a highway next to a guardrail with low-angle wheel camera and motion blur.";
+                    }
+                } else if (selectedScriptUri != null) {
                     if (prompt.isEmpty()) {
                         prompt = "Custom Script: " + (selectedScriptFileName != null ? selectedScriptFileName : "custom_model.py");
                     }
@@ -236,7 +260,7 @@ public class CreateFragment extends Fragment {
 
                 // Perform strict pre-flight execution contract validation
                 boolean hasPrompt = !prompt.isEmpty();
-                boolean hasScript = (selectedScriptUri != null);
+                boolean hasScript = (selectedScriptUri != null || currentActiveAsset != null);
                 int refImgCount = selectedImageUris.size();
                 boolean hasCloudAuth = false;
                 if (getContext() != null) {
@@ -255,7 +279,13 @@ public class CreateFragment extends Fragment {
 
                 List<String> refUrisStrList = new ArrayList<>();
 
-                // If custom script is attached, cache it locally and append as first entry
+                // If an active imported model exists, prepend it to reference list with prefix
+                if (currentActiveAsset != null && currentActiveAsset.getFilePath() != null) {
+                    refUrisStrList.add("model:" + currentActiveAsset.getFilePath());
+                    VynaraLogger.system("CreateFragment: Bound active asset [" + currentActiveAsset.getName() + "] to production payload.");
+                }
+
+                // If custom script is attached, cache it locally and append
                 if (selectedScriptUri != null) {
                     String cachedScriptPath = cacheCustomScript(requireContext(), selectedScriptUri);
                     if (cachedScriptPath != null) {
@@ -283,6 +313,39 @@ public class CreateFragment extends Fragment {
                     );
                 }
             });
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        syncActiveAssetFromRuntime();
+    }
+
+    /**
+     * Bridges AssetsFragment -> CreateFragment:
+     * When user selects or imports an asset in AssetsFragment, CreateFragment automatically
+     * loads it as the active model to direct and animate.
+     */
+    private void syncActiveAssetFromRuntime() {
+        if (runtime == null) return;
+        Asset active = runtime.getActiveSelectedAsset();
+        if (active != null && !active.equals(currentActiveAsset)) {
+            currentActiveAsset = active;
+            updateReferenceUI();
+
+            String name = active.getName();
+            etPrompt.setHint("Direct action for " + name + " (e.g. 'High speed driving, low rear wheel angle, motion blur')...");
+
+            // Auto-configure appropriate style for vehicles
+            if (active.getCategory() != null && active.getCategory().toUpperCase().contains("VEHICLE")) {
+                if (spinnerStyle != null && spinnerStyle.getCount() > 0) {
+                    spinnerStyle.setSelection(0); // Photorealistic
+                }
+            }
+
+            VynaraLogger.system("CreateFragment: Synchronized active asset: " + active.getName() + " (" + active.getFormat() + ")");
+            Toast.makeText(getContext(), "Ready to animate: " + active.getName(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -320,15 +383,24 @@ public class CreateFragment extends Fragment {
         if (tvReferenceCount != null) {
             int imageCount = selectedImageUris.size();
             StringBuilder sb = new StringBuilder();
+
+            if (currentActiveAsset != null) {
+                sb.append("🏎️ Model: ").append(currentActiveAsset.getName())
+                  .append(" (").append(currentActiveAsset.getFormat()).append(") ");
+            }
+
             if (selectedScriptFileName != null) {
                 sb.append("📜 ").append(selectedScriptFileName).append(" (Attached) ");
             }
+
             if (imageCount > 0) {
                 sb.append("• ").append(imageCount).append(" image(s) ");
             }
-            if (selectedScriptFileName != null || imageCount > 0) {
+
+            if (currentActiveAsset != null || selectedScriptFileName != null || imageCount > 0) {
                 sb.append("(Tap to clear)");
             }
+
             tvReferenceCount.setText(sb.toString());
         }
     }
