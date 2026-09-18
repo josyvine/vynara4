@@ -12,24 +12,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Isolated Ingestion: Check out and prepare user-uploaded 3D model (FBX, GLB, OBJ)
-      - name: Ingest Uploaded 3D Model
-        run: |
-          MODEL_PATH="${{ github.event.client_payload.model_path }}"
-          if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
-            EXT="${MODEL_PATH##*.}"
-            cp "$MODEL_PATH" "input_model.$EXT"
-            echo "Successfully ingested input model from $MODEL_PATH -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
-          elif [ -d "inputs" ]; then
-            FOUND_FILE=$(find inputs -type f \( -name "*.fbx" -o -name "*.glb" -o -name "*.gltf" -o -name "*.obj" \) | head -n 1)
-            if [ -n "$FOUND_FILE" ]; then
-              EXT="${FOUND_FILE##*.}"
-              cp "$FOUND_FILE" "input_model.$EXT"
-              echo "Successfully ingested auto-detected model: $FOUND_FILE -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
-            fi
-          fi
-          ls -la input_model.* 2>/dev/null || echo "No uploaded 3D model detected. Running pure procedural pipeline."
-
       # Step 1: Check GitHub Actions Cache (Restores in ~3s on Run 2+)
       - name: Restore Blender Cache
         id: blender-cache
@@ -45,13 +27,48 @@ jobs:
           sudo mkdir -p /opt/blender
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
-      # Step 3: Install Virtual Display Server and Media Libraries
-      - name: Install Headless Display Server (Xvfb) and FFmpeg
+      # Step 3: Install Virtual Display Server, Media Libraries & 3D Conversion Tools
+      - name: Install Headless Display Server (Xvfb), FFmpeg and Assimp
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg libsm6 libxext6 libgl1
+          sudo apt-get install -y xvfb ffmpeg libsm6 libxext6 libgl1 assimp-utils
 
-      # Step 4: Execute Blender Python Script with Auto-Repair, Input Model Ingestion & Motion Blur
+      # Step 4: Ingest and Auto-Convert Uploaded 3D Models (Resolves ASCII FBX limitation)
+      - name: Ingest and Prepare 3D Model
+        run: |
+          MODEL_PATH="${{ github.event.client_payload.model_path }}"
+          if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
+            EXT="${MODEL_PATH##*.}"
+            cp "$MODEL_PATH" "input_model.$EXT"
+            echo "Ingested input model from $MODEL_PATH -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
+          elif [ -d "inputs" ]; then
+            FOUND_FILE=$(find inputs -type f \( -name "*.fbx" -o -name "*.glb" -o -name "*.gltf" -o -name "*.obj" \) | head -n 1)
+            if [ -n "$FOUND_FILE" ]; then
+              EXT="${FOUND_FILE##*.}"
+              cp "$FOUND_FILE" "input_model.$EXT"
+              echo "Ingested auto-detected model: $FOUND_FILE -> input_model.$EXT ($(stat -c%s input_model.$EXT) bytes)"
+            fi
+          fi
+
+          # Autonomous format inspection: Detect ASCII FBX and auto-convert to standard GLB
+          if [ -f "input_model.fbx" ]; then
+            if ! head -c 20 "input_model.fbx" | grep -q "Kaydara FBX Binary"; then
+              echo "Detected ASCII FBX file format (unsupported by Blender natively). Auto-converting via assimp..."
+              assimp export "input_model.fbx" "input_model.glb"
+              if [ -f "input_model.glb" ] && [ -s "input_model.glb" ]; then
+                echo "Successfully converted ASCII FBX -> input_model.glb ($(stat -c%s input_model.glb) bytes)"
+                rm "input_model.fbx"
+              else
+                echo "Assimp conversion note: retaining original input_model.fbx"
+              fi
+            else
+              echo "Confirmed Binary FBX format. Ready for native Blender import."
+            fi
+          fi
+
+          ls -la input_model.* 2>/dev/null || echo "No uploaded 3D model detected. Running pure procedural pipeline."
+
+      # Step 5: Execute Blender Python Script with Auto-Repair, Input Model Ingestion & Motion Blur
       - name: Execute Blender Python Script
         env:
           BPY_SCRIPT: ${{ github.event.client_payload.bpy_script }}
@@ -163,10 +180,12 @@ jobs:
           bpy_script = bpy_script.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(")
           bpy_script = bpy_script.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.")
 
-          # Auto-Repair 5: Blender 4.2+ Principled BSDF & EEVEE engine updates
+          # Auto-Repair 5: Blender 4.2+ Principled BSDF socket name updates
           bpy_script = bpy_script.replace("['Transmission'].default_value", "['Transmission Weight'].default_value")
           bpy_script = bpy_script.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value")
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
+          bpy_script = bpy_script.replace("['BaseColor']", "['Base Color']")
+          bpy_script = bpy_script.replace('["BaseColor"]', '["Base Color"]')
           bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'BLENDER_EEVEE_NEXT'")
           bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"BLENDER_EEVEE_NEXT"')
 
@@ -288,7 +307,7 @@ jobs:
             exit 1
           fi
 
-      # Step 5: Upload both GLB model, Cycles render, Cinematic MP4 video, and execution logs
+      # Step 6: Upload both GLB model, Cycles render, Cinematic MP4 video, and execution logs
       - name: Upload Finished Model and Render Preview
         if: always()
         uses: actions/upload-artifact@v4
