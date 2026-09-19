@@ -157,10 +157,8 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         float[] gridVertices = new float[(gridSize * 2 + 1) * 4 * 3];
         int idx = 0;
         for (int i = -gridSize; i <= gridSize; i++) {
-            // X lines
             gridVertices[idx++] = -gridSize; gridVertices[idx++] = 0f; gridVertices[idx++] = i;
             gridVertices[idx++] = gridSize;  gridVertices[idx++] = 0f; gridVertices[idx++] = i;
-            // Z lines
             gridVertices[idx++] = i; gridVertices[idx++] = 0f; gridVertices[idx++] = -gridSize;
             gridVertices[idx++] = i; gridVertices[idx++] = 0f; gridVertices[idx++] = gridSize;
         }
@@ -175,8 +173,9 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        GLES20.glClearColor(0.07f, 0.08f, 0.11f, 1.0f); // Dark studio canvas #12131C
+        GLES20.glClearColor(0.07f, 0.08f, 0.11f, 1.0f);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        GLES20.glDepthFunc(GLES20.GL_LEQUAL);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
 
@@ -262,6 +261,7 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         }
 
         // 1. Render Ground Grid (Opaque pass, no textures)
+        GLES20.glDisable(GLES20.GL_CULL_FACE);
         drawGrid(viewMatrix, projMatrix);
 
         // 2. Render Active 3D Scene Graph Nodes
@@ -278,15 +278,14 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
             for (SceneObject obj : flatList) {
                 if (obj == null || obj.getMesh() == null || !obj.isVisible()) continue;
                 
-                // Recursively calculate global world matrix following parent-child hierarchy
+                // Uses cascading world matrix so all children follow parent motion
                 float[] modelMatrix = getAbsoluteWorldMatrix(obj);
                 if (modelMatrix == null) continue;
 
-                boolean isTranslucent = obj.getMaterial() != null && obj.getMaterial().getOpacity() < 1.0f;
+                boolean isTranslucent = obj.getMaterial() != null && obj.getMaterial().getOpacity() < 0.99f;
                 
                 RenderTask task = new RenderTask(obj, modelMatrix);
                 if (isTranslucent) {
-                    // Extract absolute world coordinates from the calculated model matrix for precise depth sorting
                     float worldX = modelMatrix[12];
                     float worldY = modelMatrix[13];
                     float worldZ = modelMatrix[14];
@@ -301,13 +300,15 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
                 }
             }
 
-            // Opaque Pass (Depth Writing Enabled)
+            // Opaque Pass: Enable backface culling to eliminate interior mesh clipping
             GLES20.glDepthMask(true);
+            GLES20.glEnable(GLES20.GL_CULL_FACE);
+            GLES20.glCullFace(GLES20.GL_BACK);
             for (RenderTask task : opaqueTasks) {
                 drawTask(task, viewMatrix, projMatrix);
             }
 
-            // Depth-sorted Translucent Pass (Depth Writing Disabled, NaN-safe TimSort)
+            // Translucent Pass: Disable depth writing & culling
             if (!translucentTasks.isEmpty()) {
                 Collections.sort(translucentTasks, (t1, t2) -> {
                     float d1 = Float.isNaN(t1.distanceToCamera) ? 0.0f : t1.distanceToCamera;
@@ -316,6 +317,7 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
                 });
 
                 GLES20.glDepthMask(false);
+                GLES20.glDisable(GLES20.GL_CULL_FACE);
                 for (RenderTask task : translucentTasks) {
                     drawTask(task, viewMatrix, projMatrix);
                 }
@@ -324,12 +326,9 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    // Recursively computes the absolute world matrix using the node's parent hierarchy
     private float[] getAbsoluteWorldMatrix(SceneObject obj) {
-        if (obj == null || obj.getTransform() == null) return null;
-        SceneObject parent = obj.getParent();
-        float[] parentWorld = (parent != null) ? getAbsoluteWorldMatrix(parent) : null;
-        return obj.getTransform().getWorldMatrix(parentWorld);
+        if (obj == null) return null;
+        return obj.getWorldMatrix();
     }
 
     private void drawGrid(float[] viewMatrix, float[] projMatrix) {
@@ -372,6 +371,14 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniformMatrix4fv(uMVPMatrixHandle, 1, false, mvpMatrix, 0);
         GLES20.glUniformMatrix4fv(uModelMatrixHandle, 1, false, modelMatrix, 0);
 
+        // Apply polygon offset for lane stripes/markings to eliminate z-fighting with the road
+        String objName = obj.getName() != null ? obj.getName().toLowerCase() : "";
+        boolean isLaneMarking = objName.contains("stripe") || objName.contains("marking") || objName.contains("lane") || objName.contains("dash");
+        if (isLaneMarking) {
+            GLES20.glEnable(GLES20.GL_POLYGON_OFFSET_FILL);
+            GLES20.glPolygonOffset(-2.0f, -2.0f);
+        }
+
         // Bind Material Uniforms
         Material mat = obj.getMaterial();
         float isWater = 0.0f;
@@ -385,14 +392,13 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
             float[] emissiveRGB = mat.getEmissionRGB();
             GLES20.glUniform4f(uEmissionHandle, emissiveRGB[0], emissiveRGB[1], emissiveRGB[2], mat.getEmissionIntensity());
 
-            // Broad check: activate wave simulation for any water, pool, or ocean material
             String matId = mat.getId() != null ? mat.getId().toLowerCase() : "";
             String matName = mat.getName() != null ? mat.getName().toLowerCase() : "";
             if (matId.contains("water") || matId.contains("ocean") || matName.contains("water") || matName.contains("ocean")) {
                 isWater = 1.0f;
             }
 
-            // GPU Texture Staging: If a bitmap was decoded on a background thread, upload it now on the GL thread
+            // GPU Texture Staging
             if (mat.hasTextureBitmap() && mat.getTextureId() == 0) {
                 Bitmap bmp = mat.getTextureBitmap();
                 if (bmp != null && !bmp.isRecycled()) {
@@ -412,12 +418,11 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
                         } finally {
                             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
                         }
-                        mat.clearTextureBitmap(); // Free RAM memory now that it's in GPU VRAM
+                        mat.clearTextureBitmap();
                     }
                 }
             }
 
-            // Bind Texture Map if present on material
             if (mat.hasTexture() && mat.getTextureId() > 0) {
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mat.getTextureId());
@@ -437,7 +442,7 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uIsWaterHandle, isWater);
         GLES20.glUniform1f(uIsSelectedHandle, obj.isSelected() ? 1.0f : 0.0f);
 
-        // Bind Buffers & Draw Mesh with strict Position(0) and capacity guards
+        // Bind Buffers & Draw Mesh
         if (mesh.getVertexBuffer() != null) {
             mesh.getVertexBuffer().position(0);
             GLES20.glEnableVertexAttribArray(aPositionHandle);
@@ -450,7 +455,6 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
             GLES20.glVertexAttribPointer(aNormalHandle, 3, GLES20.GL_FLOAT, false, 0, mesh.getNormalBuffer());
         }
 
-        // Bind UV Texture coordinates
         if (mesh.getTexBuffer() != null) {
             mesh.getTexBuffer().position(0);
             GLES20.glEnableVertexAttribArray(aTexCoordHandle);
@@ -471,7 +475,10 @@ public class StudioGLRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisableVertexAttribArray(aNormalHandle);
         GLES20.glDisableVertexAttribArray(aTexCoordHandle);
 
-        // Unbind texture unit to prevent state bleed
+        if (isLaneMarking) {
+            GLES20.glDisable(GLES20.GL_POLYGON_OFFSET_FILL);
+        }
+
         if (mat != null && mat.hasTexture()) {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
         }
