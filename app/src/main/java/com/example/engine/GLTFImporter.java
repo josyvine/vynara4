@@ -124,6 +124,7 @@ public class GLTFImporter {
         JSONArray skinsJson = json.optJSONArray("skins");
         JSONArray imagesJson = json.optJSONArray("images");
         JSONArray texturesJson = json.optJSONArray("textures");
+        JSONArray animationsJson = json.optJSONArray("animations");
 
         // 1. Decode Embedded Image Buffers into Bitmaps
         List<Bitmap> decodedBitmaps = new ArrayList<>();
@@ -414,7 +415,74 @@ public class GLTFImporter {
                 }
             }
 
-            // 5c. Only return Root-level SceneObjects (nested children are rendered recursively)
+            // 5c. Parse glTF Animation Channels into SceneObject Node Transform Tracks
+            if (animationsJson != null && accessorsJson != null && bufferViewsJson != null) {
+                for (int a = 0; a < animationsJson.length(); a++) {
+                    JSONObject animObj = animationsJson.optJSONObject(a);
+                    if (animObj == null) continue;
+
+                    JSONArray samplers = animObj.optJSONArray("samplers");
+                    JSONArray channels = animObj.optJSONArray("channels");
+
+                    if (samplers != null && channels != null) {
+                        for (int c = 0; c < channels.length(); c++) {
+                            JSONObject channel = channels.optJSONObject(c);
+                            if (channel == null) continue;
+
+                            JSONObject target = channel.optJSONObject("target");
+                            if (target == null) continue;
+
+                            int nodeIdx = target.optInt("node", -1);
+                            String path = target.optString("path", "");
+                            int samplerIdx = channel.optInt("sampler", -1);
+
+                            if (nodeIdx >= 0 && samplerIdx >= 0 && samplerIdx < samplers.length()) {
+                                SceneObject targetObj = nodeObjectMap.get(nodeIdx);
+                                if (targetObj == null) continue;
+
+                                JSONObject sampler = samplers.optJSONObject(samplerIdx);
+                                if (sampler == null) continue;
+
+                                int inputAccessorIdx = sampler.optInt("input", -1);
+                                int outputAccessorIdx = sampler.optInt("output", -1);
+
+                                if (inputAccessorIdx >= 0 && outputAccessorIdx >= 0) {
+                                    float[] times = readFloatAccessor(inputAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+                                    float[] rawValues = readFloatAccessor(outputAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
+
+                                    if (times != null && rawValues != null && times.length > 0) {
+                                        if ("rotation".equalsIgnoreCase(path)) {
+                                            // Convert quaternion [qx, qy, qz, qw] to Euler degrees [rx, ry, rz]
+                                            int numKeys = times.length;
+                                            float[] eulerValues = new float[numKeys * 3];
+                                            for (int k = 0; k < numKeys; k++) {
+                                                int qOffset = k * 4;
+                                                if (qOffset + 3 < rawValues.length) {
+                                                    float qx = rawValues[qOffset];
+                                                    float qy = rawValues[qOffset + 1];
+                                                    float qz = rawValues[qOffset + 2];
+                                                    float qw = rawValues[qOffset + 3];
+                                                    float[] euler = quaternionToEulerDegrees(qx, qy, qz, qw);
+                                                    eulerValues[k * 3] = euler[0];
+                                                    eulerValues[k * 3 + 1] = euler[1];
+                                                    eulerValues[k * 3 + 2] = euler[2];
+                                                }
+                                            }
+                                            targetObj.addAnimationTrack("rotation", times, eulerValues);
+                                        } else if ("translation".equalsIgnoreCase(path)) {
+                                            targetObj.addAnimationTrack("translation", times, rawValues);
+                                        } else if ("scale".equalsIgnoreCase(path)) {
+                                            targetObj.addAnimationTrack("scale", times, rawValues);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5d. Only return Root-level SceneObjects (nested children are rendered recursively)
             for (SceneObject obj : allPrimaryObjects) {
                 if (obj.getParent() == null) {
                     sceneObjects.add(obj);
