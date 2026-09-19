@@ -51,6 +51,9 @@ public class StudioFragment extends Fragment {
     private SeekBar seekbarTimeline;
     private ImageButton btnAnimPlay;
     private boolean isPlaying = false;
+    private float currentPlaybackTime = 0.0f;
+    private final float maxTimelineDuration = 3.5f;
+
     private android.os.Handler animHandler;
     private Runnable animRunnable;
     private ScaleGestureDetector scaleGestureDetector;
@@ -219,21 +222,31 @@ public class StudioFragment extends Fragment {
             });
         }
 
-        // Timeline and animation loop setup
+        // Universal animation loop: updates scrubber, time text, and character players across all scenes
         animRunnable = new Runnable() {
             @Override
             public void run() {
                 if (isPlaying) {
+                    currentPlaybackTime += 0.033f;
+                    if (currentPlaybackTime > maxTimelineDuration) {
+                        currentPlaybackTime = 0.0f; // Loop seamlessly
+                    }
+
+                    if (tvAnimTime != null) {
+                        tvAnimTime.setText(String.format(Locale.US, "%.1fs / %.1fs", currentPlaybackTime, maxTimelineDuration));
+                    }
+                    if (seekbarTimeline != null) {
+                        int progress = (int) ((currentPlaybackTime / maxTimelineDuration) * 100);
+                        seekbarTimeline.setProgress(progress);
+                    }
+
+                    // Update character kinematic players if characters exist
                     for (Character c : runtime.getCharacterManager().getCharacterMap().values()) {
-                        if (c.getAnimationPlayer() != null && c.getAnimationPlayer().isPlaying()) {
+                        if (c.getAnimationPlayer() != null) {
                             c.getAnimationPlayer().update(0.033f);
-                            float seconds = c.getAnimationPlayer().getCurrentTimeSeconds();
-                            if (seekbarTimeline != null) {
-                                int progress = (int) ((seconds / 5.0f) * 100);
-                                seekbarTimeline.setProgress(progress);
-                            }
                         }
                     }
+
                     animHandler.postDelayed(this, 33);
                 }
             }
@@ -266,8 +279,9 @@ public class StudioFragment extends Fragment {
             seekbarTimeline.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    float seconds = (progress / 100.0f) * 5.0f;
-                    tvAnimTime.setText(String.format(java.util.Locale.US, "%.1fs / 5.0s", seconds));
+                    float seconds = (progress / 100.0f) * maxTimelineDuration;
+                    currentPlaybackTime = seconds;
+                    tvAnimTime.setText(String.format(Locale.US, "%.1fs / %.1fs", seconds, maxTimelineDuration));
                     
                     if (fromUser) {
                         for (Character c : runtime.getCharacterManager().getCharacterMap().values()) {
@@ -316,7 +330,7 @@ public class StudioFragment extends Fragment {
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
                 float scaleFactor = detector.getScaleFactor();
-                if (Float.isNaN(scaleFactor) || Float.isInfinite(scaleFactor)) return false;
+                if (Float.isNaN(scaleFactor) || Float.isInfinite(scaleFactor) || scaleFactor <= 0.001f) return false;
 
                 if (engine != null && engine.getCameraManager() != null) {
                     Camera camera = engine.getCameraManager().getActiveCamera();
@@ -390,6 +404,13 @@ public class StudioFragment extends Fragment {
 
                             previousTouchX = x;
                             previousTouchY = y;
+                        } else if (event.getPointerCount() > 1) {
+                            // Update anchor coordinates during multi-touch so single-touch does not jump
+                            int pointerIndex = event.findPointerIndex(activePointerId);
+                            if (pointerIndex != -1) {
+                                previousTouchX = event.getX(pointerIndex);
+                                previousTouchY = event.getY(pointerIndex);
+                            }
                         }
                         return true;
                     }
@@ -420,8 +441,8 @@ public class StudioFragment extends Fragment {
     }
 
     /**
-     * Automatically frames the camera directly onto the primary 3D subject (e.g. Audi R8, vehicle, character),
-     * avoiding getting lost inside massive 200m background planes (highway, ocean, sky, atmospheric fog).
+     * Dynamically frames the camera on the primary 3D subject without hardcoding domain names.
+     * Evaluates geometric bounding spans to automatically separate the subject from oversized backdrop planes (>80m).
      */
     public void autoFrameHeroOrScene() {
         if (engine == null || engine.getCameraManager() == null) return;
@@ -434,76 +455,82 @@ public class StudioFragment extends Fragment {
             return;
         }
 
-        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY, minZ = Float.POSITIVE_INFINITY;
-        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
-        boolean foundHero = false;
-
         List<SceneObject> flatList;
         synchronized (activeScene) {
             flatList = new ArrayList<>(activeScene.getFlatObjectList());
         }
 
-        // Pass 1: Prioritize the hero vehicle/character/subject meshes
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY, minZ = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
+        boolean hasSubject = false;
+
+        // Dynamic Span Analysis: isolate the focused subject by excluding oversized environment planes (>80m span)
         for (SceneObject obj : flatList) {
-            if (obj == null || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
-            String name = obj.getName() != null ? obj.getName().toLowerCase(Locale.US) : "";
+            if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
+            float[] verts = obj.getMesh().getVertices();
+            if (verts.length == 0) continue;
 
-            boolean isBackground = name.contains("road") || name.contains("highway") 
-                    || name.contains("ocean") || name.contains("water") 
-                    || name.contains("fog") || name.contains("sky") 
-                    || name.contains("plane") || name.contains("ground")
-                    || name.contains("barrier");
+            float oMinX = Float.POSITIVE_INFINITY, oMaxX = Float.NEGATIVE_INFINITY;
+            float oMinZ = Float.POSITIVE_INFINITY, oMaxZ = Float.NEGATIVE_INFINITY;
 
-            if (!isBackground) {
-                float[] verts = obj.getMesh().getVertices();
-                if (verts.length > 0) {
-                    float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
-                    float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
-                    float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+            for (int v = 0; v < verts.length; v += 3) {
+                if (verts[v] < oMinX) oMinX = verts[v];
+                if (verts[v] > oMaxX) oMaxX = verts[v];
+                if (verts[v + 2] < oMinZ) oMinZ = verts[v + 2];
+                if (verts[v + 2] > oMaxZ) oMaxZ = verts[v + 2];
+            }
 
-                    for (int v = 0; v < verts.length; v += 3) {
-                        float vx = px + verts[v];
-                        float vy = py + verts[v + 1];
-                        float vz = pz + verts[v + 2];
-                        if (vx < minX) minX = vx;
-                        if (vy < minY) minY = vy;
-                        if (vz < minZ) minZ = vz;
-                        if (vx > maxX) maxX = vx;
-                        if (vy > maxY) maxY = vy;
-                        if (vz > maxZ) maxZ = vz;
-                        foundHero = true;
-                    }
-                }
+            float spanX = Math.abs(oMaxX - oMinX);
+            float spanZ = Math.abs(oMaxZ - oMinZ);
+
+            // Skip massive terrain/water/highway backdrop planes (>80m span) when targeting focal subject
+            if (spanX > 80.0f || spanZ > 80.0f) {
+                continue;
+            }
+
+            float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
+            float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
+            float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+
+            for (int v = 0; v < verts.length; v += 3) {
+                float vx = px + verts[v];
+                float vy = py + verts[v + 1];
+                float vz = pz + verts[v + 2];
+                if (vx < minX) minX = vx;
+                if (vy < minY) minY = vy;
+                if (vz < minZ) minZ = vz;
+                if (vx > maxX) maxX = vx;
+                if (vy > maxY) maxY = vy;
+                if (vz > maxZ) maxZ = vz;
+                hasSubject = true;
             }
         }
 
-        // Pass 2: Fallback across all geometry if no dedicated hero node detected
-        if (!foundHero) {
+        // Fallback: If all objects are large backdrops, frame across all visible geometry
+        if (!hasSubject) {
             for (SceneObject obj : flatList) {
-                if (obj == null || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
+                if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
                 float[] verts = obj.getMesh().getVertices();
-                if (verts.length > 0) {
-                    float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
-                    float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
-                    float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+                float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
+                float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
+                float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
 
-                    for (int v = 0; v < verts.length; v += 3) {
-                        float vx = px + verts[v];
-                        float vy = py + verts[v + 1];
-                        float vz = pz + verts[v + 2];
-                        if (vx < minX) minX = vx;
-                        if (vy < minY) minY = vy;
-                        if (vz < minZ) minZ = vz;
-                        if (vx > maxX) maxX = vx;
-                        if (vy > maxY) maxY = vy;
-                        if (vz > maxZ) maxZ = vz;
-                        foundHero = true;
-                    }
+                for (int v = 0; v < verts.length; v += 3) {
+                    float vx = px + verts[v];
+                    float vy = py + verts[v + 1];
+                    float vz = pz + verts[v + 2];
+                    if (vx < minX) minX = vx;
+                    if (vy < minY) minY = vy;
+                    if (vz < minZ) minZ = vz;
+                    if (vx > maxX) maxX = vx;
+                    if (vy > maxY) maxY = vy;
+                    if (vz > maxZ) maxZ = vz;
+                    hasSubject = true;
                 }
             }
         }
 
-        if (foundHero && !Float.isInfinite(minX) && !Float.isInfinite(maxX)) {
+        if (hasSubject && !Float.isInfinite(minX) && !Float.isInfinite(maxX)) {
             cam.frameBounds(new float[]{minX, minY, minZ}, new float[]{maxX, maxY, maxZ});
         } else {
             cam.setTarget(0f, 1f, 0f);
@@ -532,7 +559,7 @@ public class StudioFragment extends Fragment {
             }
 
             SceneObject obj;
-            String lowerType = type != null ? type.toLowerCase() : "cube";
+            String lowerType = type != null ? type.toLowerCase(Locale.US) : "cube";
 
             if (lowerType.contains("cube") || lowerType.contains("sphere") || lowerType.contains("cylinder") || lowerType.contains("plane")) {
                 obj = engine.createPrimitive(lowerType.replace("primitive_", ""), 1.5f, 1.5f, 1.5f);
@@ -600,7 +627,7 @@ public class StudioFragment extends Fragment {
 
             engine.getSceneManager().updateWorldTransforms();
 
-            // Auto-frame camera directly on the primary vehicle subject
+            // Dynamic subject auto-framing
             autoFrameHeroOrScene();
 
             // Check if accompanying Cycles render still image exists
