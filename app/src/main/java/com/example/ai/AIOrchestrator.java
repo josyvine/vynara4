@@ -279,7 +279,8 @@ public class AIOrchestrator {
         sysInstBuilder.append("9. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
         sysInstBuilder.append("10. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
         sysInstBuilder.append("11. Do not include GUI/context-dependent operators that fail in headless mode.\n");
-        sysInstBuilder.append("12. Organize objects cleanly with descriptive names and parent them logically.");
+        sysInstBuilder.append("12. Organize objects cleanly with descriptive names and parent them logically.\n");
+        sysInstBuilder.append("13. HEADLESS RUNNER CPU MANDATE: NEVER inspect or query GPU devices. NEVER call get_devices(). Always use: `bpy.context.scene.cycles.device = 'CPU'`.");
 
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
@@ -354,6 +355,12 @@ public class AIOrchestrator {
         sb.append("bpy.ops.object.select_all(action='SELECT')\n");
         sb.append("bpy.ops.object.delete(use_global=False)\n\n");
 
+        sb.append("# Enforce Headless CPU Cycles Device\n");
+        sb.append("try:\n");
+        sb.append("    bpy.context.scene.render.engine = 'CYCLES'\n");
+        sb.append("    bpy.context.scene.cycles.device = 'CPU'\n");
+        sb.append("except Exception: pass\n\n");
+
         sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
 
@@ -410,10 +417,9 @@ public class AIOrchestrator {
 
         sb.append("# --- STEP 1: REMOVE MESH FOG DOMAINS & EXPORT CLEAN 3D GLB ---\n");
         sb.append("try:\n");
-        sb.append("    # Purge any volumetric domain mesh cubes so they NEVER export as solid white blocks\n");
         sb.append("    for _obj in list(bpy.data.objects):\n");
         sb.append("        _n = _obj.name.lower()\n");
-        sb.append("        if ('fog' in _n or 'volume' in _n or 'domain' in _n or 'atmosphere' in _n) and _obj.type == 'MESH':\n");
+        sb.append("        if ('fog_domain' in _n or 'volume_box' in _n or 'atmosphere_domain' in _n) and _obj.type == 'MESH':\n");
         sb.append("            bpy.data.objects.remove(_obj, do_unlink=True)\n");
         sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n");
         sb.append("    print('3D GLTF Export Successful: output/model.glb')\n");
@@ -448,13 +454,17 @@ public class AIOrchestrator {
         }
         code = code.trim();
 
-        // 1. Auto-sanitize unquoted f-strings: e.g., fPool_LED_{i} -> f"Pool_LED_{i}"
+        // 1. Neutralize headless cycles get_devices() NoneType crash and force CPU
+        code = code.replaceAll("(?m)^[ \\t]*.*cycles.*(?:device\\s*=\\s*['\"]GPU['\"]|get_devices\\(\\)).*$", "try:\n    bpy.context.scene.cycles.device = 'CPU'\nexcept Exception: pass");
+        code = code.replace("get_devices()", "(bpy.context.preferences.addons['cycles'].preferences.get_devices() or [])");
+
+        // 2. Auto-sanitize unquoted f-strings: e.g., fPool_LED_{i} -> f"Pool_LED_{i}"
         code = code.replaceAll("(?<=[=\\s,(])f([a-zA-Z0-9_]+\\{[^}\"\\n]+\\}[a-zA-Z0-9_]*)", "f\"$1\"");
 
-        // 2. Auto-sanitize hallucinated combined object.mesh operator calls
+        // 3. Auto-sanitize hallucinated combined object.mesh operator calls
         code = code.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.");
 
-        // 3. Auto-sanitize hallucinated lighting and camera operators
+        // 4. Auto-sanitize hallucinated lighting and camera operators
         code = code.replace("bpy.ops.light.add(", "bpy.ops.object.light_add(");
         code = code.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(");
         code = code.replace(".primitive_cube_create(", ".primitive_cube_add(");
@@ -463,7 +473,7 @@ public class AIOrchestrator {
         code = code.replace(".primitive_cone_create(", ".primitive_cone_add(");
         code = code.replace(".primitive_uv_sphere_create(", ".primitive_uv_sphere_add(");
 
-        // 4. Auto-sanitize Blender 4.2+ Principled BSDF socket changes
+        // 5. Auto-sanitize Blender 4.2+ Principled BSDF socket changes
         code = code.replace("['Transmission'].default_value", "['Transmission Weight'].default_value");
         code = code.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value");
         code = code.replace("['Specular'].default_value", "['Specular IOR Level'].default_value");
@@ -471,17 +481,17 @@ public class AIOrchestrator {
         code = code.replaceAll("inputs\\[['\"]Subsurface['\"]\\]", "inputs['Subsurface Weight']");
         code = code.replaceAll("inputs\\[['\"]Specular['\"]\\]", "inputs['Specular IOR Level']");
 
-        // 5. Auto-sanitize Background shader node output socket ('Color' -> 'Background')
+        // 6. Auto-sanitize Background shader node output socket ('Color' -> 'Background')
         code = code.replaceAll("(\\.outputs\\[['\"])Color(['\"]\\]\\s*,\\s*[^,\\n]*?inputs\\[['\"])Surface(['\"]\\])", "$1Background$2Surface$3");
         code = code.replaceAll("(bg(?:_node)?\\.outputs\\[['\"])Color(['\"]\\])", "$1Background$2");
 
-        // 6. Auto-sanitize scene exposure path: scene.exposure -> scene.view_settings.exposure
+        // 7. Auto-sanitize scene exposure path: scene.exposure -> scene.view_settings.exposure
         code = code.replaceAll("(\\bscene)\\.exposure\\b", "$1.view_settings.exposure");
 
-        // 7. Auto-sanitize read-only sequencer_colorspace_settings assignment
+        // 8. Auto-sanitize read-only sequencer_colorspace_settings assignment
         code = code.replaceAll("(?m)^[ \\t]*.*?\\.sequencer_colorspace_settings\\s*=.*$", "pass");
 
-        // 8. Auto-sanitize Blender 4.2+ AgX color look enums
+        // 9. Auto-sanitize Blender 4.2+ AgX color look enums
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'");
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'");
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'");
@@ -491,7 +501,7 @@ public class AIOrchestrator {
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Base Contrast['\"]", "view_settings.look = 'AgX - Base Contrast'");
         code = code.replaceAll("view_settings\\.look\\s*=\\s*['\"]Punchy['\"]", "view_settings.look = 'AgX - Punchy'");
 
-        // 9. Auto-sanitize hallucinated object.keyframe_[xyz] axis assignments (e.g. stripe.keyframe_y = -100.0)
+        // 10. Auto-sanitize hallucinated object.keyframe_[xyz] axis assignments (e.g. stripe.keyframe_y = -100.0)
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([xX])\\s*=\\s*([^\\n;]+)", "$1.location.x = $3; $1.keyframe_insert(data_path='location', index=0)");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([yY])\\s*=\\s*([^\\n;]+)", "$1.location.y = $3; $1.keyframe_insert(data_path='location', index=1)");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([zZ])\\s*=\\s*([^\\n;]+)", "$1.location.z = $3; $1.keyframe_insert(data_path='location', index=2)");
@@ -499,7 +509,7 @@ public class AIOrchestrator {
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_rotation\\s*=\\s*([^\\n;]+)", "$1.rotation_euler = $2; $1.keyframe_insert(data_path='rotation_euler')");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')");
 
-        // 10. Auto-heal fog material variable name typo: f_mat -> fog_mat
+        // 11. Auto-heal fog material variable name typo: f_mat -> fog_mat
         code = code.replace("f_mat.node_tree", "fog_mat.node_tree");
 
         return code.trim();
