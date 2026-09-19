@@ -148,7 +148,7 @@ public class GLTFImporter {
                             } catch (OutOfMemoryError oom) {
                                 try {
                                     BitmapFactory.Options opts = new BitmapFactory.Options();
-                                    opts.inSampleSize = 2; // Downsample 2x to prevent mobile OOM
+                                    opts.inSampleSize = 2;
                                     bitmap = BitmapFactory.decodeByteArray(binaryBuffer, byteOffset, byteLength, opts);
                                 } catch (Throwable ignored) {}
                             } catch (Exception e) {
@@ -200,12 +200,13 @@ public class GLTFImporter {
                     }
                 }
 
+                if ("BLEND".equalsIgnoreCase(alphaMode) && a >= 1.0f) {
+                    a = 0.85f;
+                }
+
                 Material material = new Material("mat_" + i, matName, r, g, b, a);
                 material.setMetallic(metallic);
                 material.setRoughness(roughness);
-                if ("BLEND".equalsIgnoreCase(alphaMode) || a < 0.99f) {
-                    material.setTransparent(true);
-                }
                 if (baseTextureBitmap != null) {
                     material.setTextureBitmap(baseTextureBitmap);
                 }
@@ -213,7 +214,7 @@ public class GLTFImporter {
             }
         }
 
-        // 3. Parse Mesh Primitives & Material Indices (Supports Multi-Primitive Meshes)
+        // 3. Parse Mesh Primitives & Material Indices
         Map<Integer, List<Mesh>> parsedMeshesMap = new HashMap<>();
         Map<Integer, List<Integer>> meshMaterialIndicesMap = new HashMap<>();
 
@@ -493,7 +494,7 @@ public class GLTFImporter {
                 }
             }
 
-            // 5d. Only return Root-level SceneObjects (nested children are rendered recursively)
+            // 5d. Only return Root-level SceneObjects
             for (SceneObject obj : allPrimaryObjects) {
                 if (obj.getParent() == null) {
                     sceneObjects.add(obj);
@@ -530,11 +531,10 @@ public class GLTFImporter {
         if (parent == null || parent.getChildren() == null) return;
         for (SceneObject child : parent.getChildren()) {
             if (child != null) {
-                if ("translation".equalsIgnoreCase(path)) {
-                    // Offset child's relative position so multi-part assembly is preserved while in motion
-                    float ox = child.getTransform().getPositionX() - parent.getTransform().getPositionX();
-                    float oy = child.getTransform().getPositionY() - parent.getTransform().getPositionY();
-                    float oz = child.getTransform().getPositionZ() - parent.getTransform().getPositionZ();
+                if ("translation".equalsIgnoreCase(path) && child.getTransform() != null && parent.getTransform() != null) {
+                    float ox = child.getTransform().getPx() - parent.getTransform().getPx();
+                    float oy = child.getTransform().getPy() - parent.getTransform().getPy();
+                    float oz = child.getTransform().getPz() - parent.getTransform().getPz();
 
                     float[] offsetValues = new float[values.length];
                     for (int k = 0; k < times.length; k++) {
@@ -628,7 +628,6 @@ public class GLTFImporter {
             );
         }
 
-        // Extract quaternion rotation array [x, y, z, w], convert to Euler degrees, and set on Transform
         JSONArray rotation = nodeObj.optJSONArray("rotation");
         if (rotation != null && rotation.length() >= 4) {
             float qx = (float) rotation.optDouble(0, 0.0);
@@ -650,16 +649,13 @@ public class GLTFImporter {
         }
     }
 
-    // Mathematical utility to convert Quaternion [x, y, z, w] to Euler Angles in degrees (XYZ order)
     private static float[] quaternionToEulerDegrees(float x, float y, float z, float w) {
         float[] euler = new float[3];
 
-        // Roll (X-axis rotation)
         double sinr_cosp = 2.0 * (w * x + y * z);
         double cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
         euler[0] = (float) Math.toDegrees(Math.atan2(sinr_cosp, cosr_cosp));
 
-        // Pitch (Y-axis rotation)
         double sinp = 2.0 * (w * y - z * x);
         if (Math.abs(sinp) >= 1.0) {
             euler[1] = (float) Math.toDegrees(Math.copySign(Math.PI / 2.0, sinp));
@@ -667,7 +663,6 @@ public class GLTFImporter {
             euler[1] = (float) Math.toDegrees(Math.asin(sinp));
         }
 
-        // Yaw (Z-axis rotation)
         double cosy_cosp = 2.0 * (w * z + x * y);
         double siny_cosp = 1.0 - 2.0 * (y * y + z * z);
         euler[2] = (float) Math.toDegrees(Math.atan2(siny_cosp, cosy_cosp));
