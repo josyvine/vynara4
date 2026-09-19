@@ -37,6 +37,28 @@ jobs:
       - name: Ingest and Prepare 3D Model
         run: |
           mkdir -p inputs
+          
+          # Early extraction of base64 model payloads so Assimp can inspect and convert if needed
+          python3 - << 'PYEOF'
+          import json, os, base64
+          event_path = os.environ.get('GITHUB_EVENT_PATH')
+          if event_path and os.path.exists(event_path):
+              try:
+                  with open(event_path, 'r', encoding='utf-8') as ef:
+                      event_data = json.load(ef)
+                      payload = event_data.get('client_payload', {})
+                      input_model_b64 = payload.get('input_model_b64', '')
+                      if input_model_b64 and input_model_b64.strip():
+                          with open('input_model.glb', 'wb') as mf:
+                              mf.write(base64.b64decode(input_model_b64))
+                          os.makedirs('inputs', exist_ok=True)
+                          with open('inputs/input_model.glb', 'wb') as mf2:
+                              mf2.write(base64.b64decode(input_model_b64))
+                          print("Early unpacked base64 model: input_model.glb")
+              except Exception as e:
+                  print(f"Early payload read notice: {e}")
+          PYEOF
+
           MODEL_PATH="${{ github.event.client_payload.model_path }}"
 
           if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
@@ -193,8 +215,10 @@ jobs:
           bpy_script = bpy_script.replace("['Specular'].default_value", "['Specular IOR Level'].default_value")
           bpy_script = bpy_script.replace("['BaseColor']", "['Base Color']")
           bpy_script = bpy_script.replace('["BaseColor"]', '["Base Color"]')
-          bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'BLENDER_EEVEE_NEXT'")
-          bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"BLENDER_EEVEE_NEXT"')
+          bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'CYCLES'")
+          bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"CYCLES"')
+          bpy_script = bpy_script.replace("'BLENDER_EEVEE_NEXT'", "'CYCLES'")
+          bpy_script = bpy_script.replace('"BLENDER_EEVEE_NEXT"', '"CYCLES"')
 
           # Auto-Repair 6: Blender 4.2+ AgX Color Management Look Enums
           look_fixes = [
@@ -296,6 +320,15 @@ jobs:
           else:
               bpy_script += scale_normalizer_block
 
+          # Auto-Repair 25: Neutralize cycles get_devices() NoneType crash & enforce headless CPU device
+          bpy_script = re.sub(
+              r"^[ \t]*.*cycles.*(?:device\s*=\s*['\"]GPU['\"]|get_devices\(\)).*$",
+              "try:\n    bpy.context.scene.cycles.device = 'CPU'\nexcept Exception: pass",
+              bpy_script,
+              flags=re.MULTILINE
+          )
+          bpy_script = bpy_script.replace("get_devices()", "(bpy.context.preferences.addons['cycles'].preferences.get_devices() or [])")
+
           # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
               bpy_script += (
@@ -333,31 +366,29 @@ jobs:
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
               )
 
-          # Auto-Repair 21: Full Cinematic MP4 Animation Video Renderer with Hardware Fallback
+          # Auto-Repair 21: Fast Cinematic Animation Video Exporter with CPU Cycles safety
           anim_render_snippet = (
               "\n\n# Dynamic Cinematic Animation Video Exporter\n"
               "try:\n"
               "    import bpy, os\n"
               "    _sc = bpy.context.scene\n"
               "    if _sc.camera and _sc.frame_end > _sc.frame_start and not os.path.exists('output/cinematic.mp4'):\n"
+              "        if (_sc.frame_end - _sc.frame_start) > 60:\n"
+              "            _sc.frame_end = _sc.frame_start + 60\n"
               "        print(f'Rendering Cinematic MP4 Animation: frames {_sc.frame_start} to {_sc.frame_end}...')\n"
-              "        _sc.render.resolution_x = 1280\n"
-              "        _sc.render.resolution_y = 720\n"
+              "        _sc.render.resolution_x = 960\n"
+              "        _sc.render.resolution_y = 540\n"
               "        _sc.render.image_settings.file_format = 'FFMPEG'\n"
               "        _sc.render.ffmpeg.format = 'MPEG4'\n"
               "        _sc.render.ffmpeg.codec = 'H264'\n"
               "        _sc.render.ffmpeg.constant_rate_factor = 'MEDIUM'\n"
-              "        _sc.render.ffmpeg.ffmpeg_preset = 'REALTIME'\n"
+              "        _sc.render.ffmpeg.ffmpeg_preset = 'ULTRAFAST'\n"
               "        _sc.render.filepath = 'output/cinematic.mp4'\n"
-              "        try:\n"
-              "            _sc.render.engine = 'BLENDER_EEVEE_NEXT'\n"
-              "            bpy.ops.render.render(animation=True)\n"
-              "        except Exception as _eevee_err:\n"
-              "            print(f'EEVEE_NEXT fallback to fast Cycles: {_eevee_err}')\n"
-              "            _sc.render.engine = 'CYCLES'\n"
-              "            _sc.cycles.device = 'CPU'\n"
-              "            _sc.cycles.samples = 1\n"
-              "            bpy.ops.render.render(animation=True)\n"
+              "        _sc.render.engine = 'CYCLES'\n"
+              "        _sc.cycles.device = 'CPU'\n"
+              "        _sc.cycles.samples = 1\n"
+              "        _sc.cycles.use_denoising = False\n"
+              "        bpy.ops.render.render(animation=True)\n"
               "        print('Cinematic MP4 video rendered successfully: output/cinematic.mp4')\n"
               "except Exception as _anim_err: print(f'Cinematic video export note: {_anim_err}')\n"
           )
