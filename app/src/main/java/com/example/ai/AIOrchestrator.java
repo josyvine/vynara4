@@ -164,7 +164,7 @@ public class AIOrchestrator {
                                 dispatchDynamicScriptWriter(request.getUserPrompt(), request.getStyle(), directorSpec, activeModelPath, new GeminiApiClient.ApiCallback<String>() {
                                     @Override
                                     public void onSuccess(String dynamicBpyCode) {
-                                        // Phase 3: Local Safety Wrapper with CPU-Safe Settings and Standard GLB Export
+                                        // Phase 3: Local Safety Wrapper with Assembly-Wide Scale Normalizer and Animation-Safe GLB Export
                                         String finalMasterScript = wrapDynamicScriptWithSafety(dynamicBpyCode, directorSpec, activeModelPath);
 
                                         for (TaskNode node : plan.getTaskGraph().getAllNodes()) {
@@ -208,8 +208,6 @@ public class AIOrchestrator {
 
     /**
      * Phase 2: Dispatches a live request to Gemini to author custom Blender Python (bpy) code.
-     * If an imported 3D model is present, instructs Gemini to load that model dynamically and
-     * ONLY script the environment, motion, lighting, and camera without hallucinating primitive cubes.
      */
     private void dispatchDynamicScriptWriter(final String userPrompt, 
                                              final String style, 
@@ -238,8 +236,7 @@ public class AIOrchestrator {
             sysInstBuilder.append("   - The user has already provided the primary 3D model. The runner auto-normalizes uploaded models into 'inputs/input_model.glb'.\n");
             sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists!\n");
             sysInstBuilder.append("   - STEP 1: Import the model using the following fault-tolerant import block:\n");
-            sysInstBuilder.append("     import os, bpy\n");
-            sysInstBuilder.append("     imported_objs = []\n");
+            sysInstBuilder.append("     import os, bpy, mathutils\n");
             sysInstBuilder.append("     _before = set(bpy.data.objects)\n");
             sysInstBuilder.append("     if os.path.exists('inputs/input_model.glb'):\n");
             sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
@@ -257,38 +254,40 @@ public class AIOrchestrator {
                 sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
             sysInstBuilder.append("     imported_objs = [o for o in bpy.data.objects if o not in _before and o.type == 'MESH']\n");
-            sysInstBuilder.append("   - STEP 2: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
-            sysInstBuilder.append("     Create a master Empty object to drive the imported model:\n");
-            sysInstBuilder.append("     root_empty = bpy.data.objects.new('Model_Root', None)\n");
+            sysInstBuilder.append("   - STEP 2: ASSEMBLY-WIDE DIMENSION NORMALIZATION:\n");
+            sysInstBuilder.append("     Calculate the collective bounding box across all `imported_objs`. If max span > 10.0m, scale the assembly down so primary length is 4.5m.\n");
+            sysInstBuilder.append("   - STEP 3: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
+            sysInstBuilder.append("     Create a master Empty object: root_empty = bpy.data.objects.new('Model_Root', None)\n");
             sysInstBuilder.append("     root_empty.empty_display_type = 'PLAIN_AXES'\n");
             sysInstBuilder.append("     bpy.context.collection.objects.link(root_empty)\n");
             sysInstBuilder.append("     for obj in imported_objs:\n");
             sysInstBuilder.append("         if not obj.parent:\n");
             sysInstBuilder.append("             obj.parent = root_empty\n");
-            sysInstBuilder.append("   - STEP 3: ANIMATE THE MASTER ROOT:\n");
-            sysInstBuilder.append("     ALL driving/moving location and rotation keyframes MUST be applied directly to `root_empty`! ");
-            sysInstBuilder.append("     For example, keyframe `root_empty.location.y` from 0 to 40 meters over frames 1 to 60 using root_empty.keyframe_insert(data_path='location', frame=f).\n");
-            sysInstBuilder.append("   - STEP 4: WHEEL ROTATION DYNAMICS:\n");
-            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel found, keyframe its local rotation around its axle (e.g. `w.rotation_euler.x = -speed * f`) so wheels visibly roll!\n");
-            sysInstBuilder.append("   - STEP 5: ROAD & ENVIRONMENT GROUND CLAMPING:\n");
-            sysInstBuilder.append("     Any road, asphalt, or terrain MUST be a flat horizontal plane strictly located at Z = 0.0. ");
-            sysInstBuilder.append("     Lane stripes must be flat rectangular planes lying on the road at Z = 0.005 with normal vector pointing straight UP (0, 0, 1). NEVER tilt lane markings or leave them floating disconnected in mid-air!\n");
+            sysInstBuilder.append("   - STEP 4: MANDATORY DRIVING ANIMATION:\n");
+            sysInstBuilder.append("     Keyframe `root_empty` driving forward along the road (Y axis): frame 1 at Y=0.0, frame 60 at Y=75.0m!\n");
+            sysInstBuilder.append("     root_empty.location = (0, 0, 0); root_empty.keyframe_insert(data_path='location', frame=1)\n");
+            sysInstBuilder.append("     root_empty.location = (0, 75, 0); root_empty.keyframe_insert(data_path='location', frame=60)\n");
+            sysInstBuilder.append("   - STEP 5: ROTATIONAL WHEEL SPIN:\n");
+            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel, insert keyframes rotating around its axle (X axis) proportional to distance traveled: e.g. frame 1 rx=0, frame 60 rx=-100.0.\n");
+            sysInstBuilder.append("   - STEP 6: REAL-WORLD HIGHWAY ROAD CONTRACT:\n");
+            sysInstBuilder.append("     Create a realistic asphalt highway: a flat rectangular plane located at Z = 0.0, width = 14.0m (X axis), length = 250.0m (Y axis along the direction of travel).\n");
+            sysInstBuilder.append("     Add dashed center lane markings: width = 0.2m, length = 3.0m, spaced every 6.0m along Y, clamped strictly to Z = 0.005 with normal vector pointing straight UP (0, 0, 1). NEVER leave stripes tilted or floating in mid-air!\n");
         } else {
             sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
             sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
         }
 
-        sysInstBuilder.append("3. DYNAMIC SPATIAL PLACEMENT: Inspect the primary subject's dimensions. Align its contact base naturally with the ground level (Z = 0) or environment surface as dictated by the USER PROMPT (e.g. terrain, floor, water, or air for aerial/space subjects). Never allow subjects to clip or submerge into the ground surface.\n");
-        sysInstBuilder.append("4. NO MESH VOLUMETRIC CUBES: NEVER create polygonal mesh boxes or cubes (`primitive_cube_add`) for fog or volumetrics. glTF does not support 3D volume shaders and converts them into 100% opaque solid white boxes that block the scene. Volumetric effects must strictly use world shader nodes (`ShaderNodeVolumePrincipled`) connected to `World Output`.\n");
+        sysInstBuilder.append("3. DYNAMIC SPATIAL PLACEMENT: Inspect the primary subject's dimensions. Align its contact base naturally with the ground level (Z = 0). Never allow subjects to clip or submerge into the ground surface.\n");
+        sysInstBuilder.append("4. NO MESH VOLUMETRIC CUBES: NEVER create polygonal mesh boxes or cubes (`primitive_cube_add`) for fog or volumetrics. Volumetric effects must strictly use world shader nodes (`ShaderNodeVolumePrincipled`) connected to `World Output`.\n");
         sysInstBuilder.append("5. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
         sysInstBuilder.append("   In ShaderNodeBackground, the output socket is named 'Background' (bg.outputs['Background']), NEVER 'Color'.\n");
         sysInstBuilder.append("6. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
         sysInstBuilder.append("   NEVER set `scene.view_settings.look = 'High Contrast'`. ALWAYS write: `scene.view_settings.look = 'AgX - High Contrast'`.\n");
         sysInstBuilder.append("   NEVER assign `scene.sequencer_colorspace_settings` (it is read-only). Set exposure via `scene.view_settings.exposure`, NEVER `scene.exposure`.\n");
         sysInstBuilder.append("7. PROMPT-DRIVEN ANIMATION & CAMERA MOTION:\n");
-        sysInstBuilder.append("   - If and only if the USER PROMPT requests motion, action, or animation (e.g. driving, running, flying, rotating, cinematic camera move):\n");
-        sysInstBuilder.append("     * Configure frame range: `bpy.context.scene.frame_start = 1` and `bpy.context.scene.frame_end = 60` (or 90 for longer sequences).\n");
-        sysInstBuilder.append("     * Animate the primary subject/root and its moving components along realistic trajectories matching the described action.\n");
+        sysInstBuilder.append("   - If and only if the USER PROMPT requests motion, action, or animation:\n");
+        sysInstBuilder.append("     * Configure frame range: `bpy.context.scene.frame_start = 1` and `bpy.context.scene.frame_end = 60`.\n");
+        sysInstBuilder.append("     * Animate the primary subject/root along realistic trajectories matching the described action.\n");
         sysInstBuilder.append("     * Animate the camera (tracking, panning, or orbiting) to capture the cinematic action.\n");
         sysInstBuilder.append("     * Insert keyframes using `obj.keyframe_insert(data_path='location', frame=f)` and `obj.keyframe_insert(data_path='rotation_euler', frame=f)`.\n");
         sysInstBuilder.append("     * NEVER write `obj.keyframe_y = ...` or `obj.keyframe_x = ...`.\n");
@@ -304,9 +303,8 @@ public class AIOrchestrator {
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
         promptBuilder.append("STYLE: ").append(style).append("\n");
         if (hasImportedModel) {
-            promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model (format: ").append(modelExt.toUpperCase(Locale.ROOT))
-                         .append(") is normalized in the workspace as 'inputs/input_model.glb'. ")
-                         .append("Import it, parent its meshes to 'Model_Root', animate 'Model_Root' and the wheels, place a ground road clamped strictly to Z=0, and direct lighting/camera around it. Do not replace the model with cubes!\n");
+            promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model is normalized as 'inputs/input_model.glb'. ")
+                         .append("Import it, normalize assembly scale to 4.5m, parent all meshes to 'Model_Root', animate 'Model_Root' driving along Y (0 to 75m), animate wheel spin, build a full 14m x 250m highway at Z=0 with center lane dashes at Z=0.005, and rig lighting/cameras. Do not replace the model with cubes!\n");
         }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
@@ -348,7 +346,7 @@ public class AIOrchestrator {
 
     /**
      * Phase 3: Wraps Gemini's dynamic modeling script with headless scene initialization,
-     * cinematic camera/lighting, CPU-safe Cycles settings, AgX color management, and standardized GLB export.
+     * cinematic camera/lighting, CPU-safe Cycles settings, AgX color management, and animation-safe GLB export.
      */
     private String wrapDynamicScriptWithSafety(String dynamicCode, AIDirectorSpec spec, String importedModelPath) {
         StringBuilder sb = new StringBuilder();
@@ -361,6 +359,7 @@ public class AIOrchestrator {
         sb.append("import math\n");
         sb.append("import random\n");
         sb.append("import sys\n");
+        sb.append("import mathutils\n");
         sb.append("import addon_utils\n\n");
         sb.append("try:\n");
         sb.append("    addon_utils.enable('archimesh')\n");
@@ -382,17 +381,43 @@ public class AIOrchestrator {
         sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
 
+        sb.append("# --- ASSEMBLY-WIDE SCALE NORMALIZATION (4.5M AUTOMOTIVE SCALE) ---\n");
+        sb.append("try:\n");
+        sb.append("    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking'])]\n");
+        sb.append("    if _car_meshes:\n");
+        sb.append("        _min_x, _min_y, _min_z = float('inf'), float('inf'), float('inf')\n");
+        sb.append("        _max_x, _max_y, _max_z = float('-inf'), float('-inf'), float('-inf')\n");
+        sb.append("        for _m in _car_meshes:\n");
+        sb.append("            for _corner in _m.bound_box:\n");
+        sb.append("                _w = _m.matrix_world @ mathutils.Vector(_corner)\n");
+        sb.append("                _min_x = min(_min_x, _w.x); _max_x = max(_max_x, _w.x)\n");
+        sb.append("                _min_y = min(_min_y, _w.y); _max_y = max(_max_y, _w.y)\n");
+        sb.append("                _min_z = min(_min_z, _w.z); _max_z = max(_max_z, _w.z)\n");
+        sb.append("        _max_span = max(_max_x - _min_x, _max_y - _min_y, _max_z - _min_z)\n");
+        sb.append("        if _max_span > 10.0:\n");
+        sb.append("            _ratio = 4.5 / _max_span\n");
+        sb.append("            print(f'Normalizing vehicle assembly from {_max_span:.1f}m to 4.5m (ratio={_ratio:.5f})')\n");
+        sb.append("            for _m in _car_meshes:\n");
+        sb.append("                _m.scale = (_m.scale.x * _ratio, _m.scale.y * _ratio, _m.scale.z * _ratio)\n");
+        sb.append("                bpy.context.view_layer.objects.active = _m\n");
+        sb.append("                bpy.ops.object.transform_apply(scale=True)\n");
+        sb.append("except Exception as _sn_err: print(f'Scale normalizer note: {_sn_err}')\n\n");
+
         sb.append("# --- ROAD & GROUND POST-PROCESS NORMALIZATION ---\n");
         sb.append("try:\n");
         sb.append("    for _o in list(bpy.data.objects):\n");
-        sb.append("        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['stripe', 'lane', 'marking', 'dash']):\n");
-        sb.append("            _o.location.z = 0.005\n");
-        sb.append("            _o.rotation_euler.x = 0.0\n");
-        sb.append("            _o.rotation_euler.y = 0.0\n");
-        sb.append("        elif _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['road', 'highway', 'asphalt']):\n");
-        sb.append("            _o.location.z = 0.0\n");
-        sb.append("            _o.rotation_euler.x = 0.0\n");
-        sb.append("            _o.rotation_euler.y = 0.0\n");
+        sb.append("        if _o.type == 'MESH':\n");
+        sb.append("            _n = _o.name.lower()\n");
+        sb.append("            if any(_k in _n for _k in ['stripe', 'lane', 'marking', 'dash']):\n");
+        sb.append("                _o.location.z = 0.005\n");
+        sb.append("                _o.rotation_euler.x = 0.0\n");
+        sb.append("                _o.rotation_euler.y = 0.0\n");
+        sb.append("            elif any(_k in _n for _k in ['road', 'highway', 'asphalt']):\n");
+        sb.append("                _o.location.z = 0.0\n");
+        sb.append("                _o.rotation_euler.x = 0.0\n");
+        sb.append("                _o.rotation_euler.y = 0.0\n");
+        sb.append("                if _o.dimensions.x < 12.0: _o.dimensions.x = 14.0\n");
+        sb.append("                if _o.dimensions.y < 80.0: _o.dimensions.y = 250.0\n");
         sb.append("except Exception as _norm_err: print(f'Road clamp note: {_norm_err}')\n\n");
 
         sb.append("# --- CINEMATIC LIGHTING & CAMERA RIG ---\n");
@@ -446,13 +471,13 @@ public class AIOrchestrator {
             sb.append("except Exception as ve: print(f'Volumetric setup note: {ve}')\n\n");
         }
 
-        sb.append("# --- STEP 1: REMOVE MESH FOG DOMAINS & EXPORT CLEAN 3D GLB ---\n");
+        sb.append("# --- STEP 1: EXPORT ANIMATION-SAFE CLEAN 3D GLB ---\n");
         sb.append("try:\n");
         sb.append("    for _obj in list(bpy.data.objects):\n");
         sb.append("        _n = _obj.name.lower()\n");
         sb.append("        if ('fog_domain' in _n or 'volume_box' in _n or 'atmosphere_domain' in _n) and _obj.type == 'MESH':\n");
         sb.append("            bpy.data.objects.remove(_obj, do_unlink=True)\n");
-        sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n");
+        sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=False, export_skins=True, export_animations=True)\n");
         sb.append("    print('3D GLTF Export Successful: output/model.glb')\n");
         sb.append("except Exception as ge: print(f'GLTF export warning: {ge}')\n\n");
 
