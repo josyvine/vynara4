@@ -2,11 +2,12 @@ package com.example.engine;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class SceneObject {
     private String id;
     private String name;
-    private String semanticType; // PRIMITIVE, STRUCTURE, HOUSE, SOFA, CHARACTER, CREATURE, LIGHT, CAMERA
+    private String semanticType; // PRIMITIVE, STRUCTURE, HOUSE, SOFA, CHARACTER, CREATURE, LIGHT, CAMERA, EMPTY
     private Transform transform;
     private Mesh mesh;
     private Material material;
@@ -15,6 +16,22 @@ public class SceneObject {
 
     private SceneObject parent;
     private final List<SceneObject> children = new ArrayList<>();
+
+    // Animation Track Support (for keyframed transform motion: translation, rotation, scale)
+    public static class KeyframeTrack {
+        public final String path; // "translation", "rotation", "scale"
+        public final float[] times;
+        public final float[] values; // 3 floats per keyframe for translation/scale, or Euler degrees for rotation
+
+        public KeyframeTrack(String path, float[] times, float[] values) {
+            this.path = path != null ? path.toLowerCase(Locale.US) : "translation";
+            this.times = times;
+            this.values = values;
+        }
+    }
+
+    private final List<KeyframeTrack> animationTracks = new ArrayList<>();
+    private Transform restTransform;
 
     public SceneObject(String id, String name, String semanticType, Mesh mesh, Material material) {
         this.id = id != null ? id : "obj_" + System.currentTimeMillis();
@@ -71,6 +88,100 @@ public class SceneObject {
         return parent == null;
     }
 
+    // --- Animation Track API ---
+
+    public void addAnimationTrack(String targetPath, float[] times, float[] values) {
+        if (targetPath != null && times != null && values != null && times.length > 0) {
+            animationTracks.add(new KeyframeTrack(targetPath, times, values));
+            if (restTransform == null && transform != null) {
+                restTransform = new Transform();
+                restTransform.setPosition(transform.getPx(), transform.getPy(), transform.getPz());
+                restTransform.setRotation(transform.getRx(), transform.getRy(), transform.getRz());
+                restTransform.setScale(transform.getSx(), transform.getSy(), transform.getSz());
+            }
+        }
+    }
+
+    public List<KeyframeTrack> getAnimationTracks() {
+        return animationTracks;
+    }
+
+    public boolean hasAnimation() {
+        if (!animationTracks.isEmpty()) return true;
+        for (SceneObject child : children) {
+            if (child != null && child.hasAnimation()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Evaluates animation tracks at the specified timestamp (in seconds)
+     * and updates node transforms accordingly. Recursively updates child nodes.
+     */
+    public void updateAnimation(float timeSeconds) {
+        if (!animationTracks.isEmpty()) {
+            for (KeyframeTrack track : animationTracks) {
+                float[] sample = sampleTrack(track, timeSeconds);
+                if (sample != null && sample.length >= 3) {
+                    if ("translation".equals(track.path)) {
+                        transform.setPosition(sample[0], sample[1], sample[2]);
+                    } else if ("rotation".equals(track.path)) {
+                        transform.setRotation(sample[0], sample[1], sample[2]);
+                    } else if ("scale".equals(track.path)) {
+                        transform.setScale(sample[0], sample[1], sample[2]);
+                    }
+                }
+            }
+        }
+
+        for (SceneObject child : children) {
+            if (child != null) {
+                child.updateAnimation(timeSeconds);
+            }
+        }
+    }
+
+    private float[] sampleTrack(KeyframeTrack track, float t) {
+        if (track.times == null || track.times.length == 0 || track.values == null) return null;
+        int numKeys = track.times.length;
+        int stride = track.values.length / numKeys;
+        if (stride < 3) return null;
+
+        if (t <= track.times[0]) {
+            float[] result = new float[stride];
+            System.arraycopy(track.values, 0, result, 0, stride);
+            return result;
+        }
+        if (t >= track.times[numKeys - 1]) {
+            float[] result = new float[stride];
+            System.arraycopy(track.values, (numKeys - 1) * stride, result, 0, stride);
+            return result;
+        }
+
+        int idx = 0;
+        for (int i = 0; i < numKeys - 1; i++) {
+            if (t >= track.times[i] && t <= track.times[i + 1]) {
+                idx = i;
+                break;
+            }
+        }
+
+        float t0 = track.times[idx];
+        float t1 = track.times[idx + 1];
+        float alpha = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0f;
+
+        float[] result = new float[stride];
+        int offset0 = idx * stride;
+        int offset1 = (idx + 1) * stride;
+
+        for (int c = 0; c < stride; c++) {
+            float v0 = track.values[offset0 + c];
+            float v1 = track.values[offset1 + c];
+            result[c] = v0 + (v1 - v0) * alpha;
+        }
+        return result;
+    }
+
     /**
      * Phase 15 Alignment: Deep copies this scene object node and recursively
      * duplicates its children sub-graph.
@@ -93,6 +204,10 @@ public class SceneObject {
             copy.getTransform().setPosition(this.transform.getPx(), this.transform.getPy(), this.transform.getPz());
             copy.getTransform().setRotation(this.transform.getRx(), this.transform.getRy(), this.transform.getRz());
             copy.getTransform().setScale(this.transform.getSx(), this.transform.getSy(), this.transform.getSz());
+        }
+
+        for (KeyframeTrack track : this.animationTracks) {
+            copy.addAnimationTrack(track.path, track.times.clone(), track.values.clone());
         }
 
         for (SceneObject child : children) {
