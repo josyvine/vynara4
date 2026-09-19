@@ -299,12 +299,17 @@ jobs:
           # Auto-Repair 23: Auto-repair scene.render.shutter -> scene.render.motion_blur_shutter
           bpy_script = re.sub(r"(\.render)\.shutter\b", r"\1.motion_blur_shutter", bpy_script)
 
-          # Auto-Repair 24: Collective Assembly Scale Normalizer (measures true bounding box across all 168 sub-meshes)
+          # Auto-Repair 24: Isolated Vehicle Scale Normalizer (strictly excludes 125m road/guardrails to prevent miniature shrink)
           scale_normalizer_block = (
-              "\n\n# Assembly-Wide Collective Scale Normalizer\n"
+              "\n\n# Isolated Vehicle Scale Normalizer\n"
               "try:\n"
               "    import mathutils\n"
-              "    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking'])]\n"
+              "    _root = bpy.data.objects.get('Model_Root') or bpy.data.objects.get('Car_Root')\n"
+              "    if _root:\n"
+              "        _car_meshes = [c for c in _root.children if c.type == 'MESH']\n"
+              "    else:\n"
+              "        _env_keys = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'cube']\n"
+              "        _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_keys)]\n"
               "    if _car_meshes:\n"
               "        _min_x, _min_y, _min_z = float('inf'), float('inf'), float('inf')\n"
               "        _max_x, _max_y, _max_z = float('-inf'), float('-inf'), float('-inf')\n"
@@ -314,10 +319,8 @@ jobs:
               "                _min_x = min(_min_x, _w.x); _max_x = max(_max_x, _w.x)\n"
               "                _min_y = min(_min_y, _w.y); _max_y = max(_max_y, _w.y)\n"
               "                _min_z = min(_min_z, _w.z); _max_z = max(_max_z, _w.z)\n"
-              "        _dim_x = _max_x - _min_x\n"
-              "        _dim_y = _max_y - _min_y\n"
-              "        _dim_z = _max_z - _min_z\n"
-              "        _max_span = max(_dim_x, _dim_y, _dim_z)\n"
+              "        _max_span = max(_max_x - _min_x, _max_y - _min_y, _max_z - _min_z)\n"
+              "        # Only scale if vehicle is modeled in raw millimeters/centimeters (> 10.0m) and ignore already normalized 4.5m models\n"
               "        if _max_span > 10.0:\n"
               "            _target_len = 4.5\n"
               "            _scale_ratio = _target_len / _max_span\n"
@@ -388,7 +391,8 @@ jobs:
               "    _root = bpy.data.objects.get('Model_Root')\n"
               "    if not _root:\n"
               "        _root = bpy.data.objects.get('Car_Root')\n"
-              "    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'camera', 'light'])]\n"
+              "    _env_keys = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'cube']\n"
+              "    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_keys)]\n"
               "    if not _root and len(_car_meshes) > 5:\n"
               "        _root = bpy.data.objects.new('Model_Root', None)\n"
               "        _root.empty_display_type = 'PLAIN_AXES'\n"
@@ -460,7 +464,7 @@ jobs:
               "        _sc.render.ffmpeg.format = 'MPEG4'\n"
               "        _sc.render.ffmpeg.codec = 'H264'\n"
               "        _sc.render.ffmpeg.constant_rate_factor = 'MEDIUM'\n"
-              "        _sc.render.ffmpeg.ffmpeg_preset = 'ULTRAFAST'\n"
+              "        _sc.render.ffmpeg.ffmpeg_preset = 'REALTIME'\n"
               "        _sc.render.filepath = 'output/cinematic.mp4'\n"
               "        _sc.render.engine = 'CYCLES'\n"
               "        _sc.cycles.device = 'CPU'\n"
