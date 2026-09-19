@@ -567,7 +567,7 @@ public class AIOrchestrator {
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([zZ])\\s*=\\s*([^\\n;]+)", "$1.location.z = $3; $1.keyframe_insert(data_path='location', index=2)");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_location\\s*=\\s*([^\\n;]+)", "$1.location = $2; $1.keyframe_insert(data_path='location')");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_rotation\\s*=\\s*([^\\n;]+)", "$1.rotation_euler = $2; $1.keyframe_insert(data_path='rotation_euler')");
-        code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')", code);
+        code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')");
 
         // 11. Auto-heal fog material variable name typo: f_mat -> fog_mat
         code = code.replace("f_mat.node_tree", "fog_mat.node_tree");
