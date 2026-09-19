@@ -255,25 +255,31 @@ public class AIOrchestrator {
                 sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
             sysInstBuilder.append("   - STEP 2: Inspect `bpy.context.selected_objects` to reference the imported root and sub-assemblies.\n");
-            sysInstBuilder.append("   - STEP 3: Script ONLY the surrounding environment (terrain, road, sky, props), movement/animation paths, parenting, lighting, and camera tracking around this imported model.\n");
+            sysInstBuilder.append("   - STEP 3: Script ONLY the surrounding environment matching USER PROMPT, movement/animation paths, parenting, lighting, and camera tracking around this imported model.\n");
         } else {
             sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
             sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
         }
 
-        sysInstBuilder.append("3. Use modifiers where appropriate (Bevel, Subdivision Surface, Mirror, Solidify, Boolean, Shrinkwrap).\n");
-        sysInstBuilder.append("4. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
+        sysInstBuilder.append("3. DYNAMIC SPATIAL PLACEMENT: Inspect the primary subject's dimensions. Align its contact base naturally with the ground level (Z = 0) or environment surface as dictated by the USER PROMPT (e.g. terrain, floor, water, or air for aerial/space subjects). Never allow subjects to clip or submerge into the ground surface.\n");
+        sysInstBuilder.append("4. NO MESH VOLUMETRIC CUBES: NEVER create polygonal mesh boxes or cubes (`primitive_cube_add`) for fog or volumetrics. glTF does not support 3D volume shaders and converts them into 100% opaque solid white boxes that block the scene. Volumetric effects must strictly use world shader nodes (`ShaderNodeVolumePrincipled`) connected to `World Output`.\n");
+        sysInstBuilder.append("5. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
         sysInstBuilder.append("   In ShaderNodeBackground, the output socket is named 'Background' (bg.outputs['Background']), NEVER 'Color'.\n");
-        sysInstBuilder.append("5. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
+        sysInstBuilder.append("6. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
         sysInstBuilder.append("   NEVER set `scene.view_settings.look = 'High Contrast'`. ALWAYS write: `scene.view_settings.look = 'AgX - High Contrast'`.\n");
         sysInstBuilder.append("   NEVER assign `scene.sequencer_colorspace_settings` (it is read-only). Set exposure via `scene.view_settings.exposure`, NEVER `scene.exposure`.\n");
-        sysInstBuilder.append("6. ANIMATION & KEYFRAMING: To animate transforms, assign position/rotation (e.g., `obj.location.y = -100.0` or `obj.location = (x, y, z)`) and call `obj.keyframe_insert(data_path='location', frame=1)`.\n");
-        sysInstBuilder.append("   NEVER write `obj.keyframe_y = ...` or `obj.keyframe_x = ...`. Those properties do not exist on Blender objects.\n");
-        sysInstBuilder.append("7. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"`.\n");
-        sysInstBuilder.append("8. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
-        sysInstBuilder.append("9. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
-        sysInstBuilder.append("10. Do not include GUI/context-dependent operators that fail in headless mode.\n");
-        sysInstBuilder.append("11. Organize objects cleanly with descriptive names and parent them logically.");
+        sysInstBuilder.append("7. PROMPT-DRIVEN ANIMATION & CAMERA MOTION:\n");
+        sysInstBuilder.append("   - If and only if the USER PROMPT requests motion, action, or animation (e.g. driving, running, flying, rotating, cinematic camera move):\n");
+        sysInstBuilder.append("     * Configure frame range: `bpy.context.scene.frame_start = 1` and `bpy.context.scene.frame_end = 60` (or 90 for longer sequences).\n");
+        sysInstBuilder.append("     * Animate the primary subject and its moving components along realistic trajectories matching the described action.\n");
+        sysInstBuilder.append("     * Animate the camera (tracking, panning, or orbiting) to capture the cinematic action.\n");
+        sysInstBuilder.append("     * Insert keyframes using `obj.keyframe_insert(data_path='location', frame=f)` and `obj.keyframe_insert(data_path='rotation_euler', frame=f)`.\n");
+        sysInstBuilder.append("     * NEVER write `obj.keyframe_y = ...` or `obj.keyframe_x = ...`.\n");
+        sysInstBuilder.append("8. NEVER output unquoted f-strings like `fName_{i}`. All f-strings MUST have double quotes: `f\"Name_{i}\"`.\n");
+        sysInstBuilder.append("9. Use correct standard Blender mesh operators: `bpy.ops.mesh.primitive_cube_add`, `bpy.ops.mesh.primitive_plane_add`, `bpy.ops.mesh.primitive_cylinder_add`. NEVER use `bpy.ops.object.mesh.` or invent `_create` operators.\n");
+        sysInstBuilder.append("10. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
+        sysInstBuilder.append("11. Do not include GUI/context-dependent operators that fail in headless mode.\n");
+        sysInstBuilder.append("12. Organize objects cleanly with descriptive names and parent them logically.");
 
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
@@ -402,9 +408,14 @@ public class AIOrchestrator {
             sb.append("except Exception as ve: print(f'Volumetric setup note: {ve}')\n\n");
         }
 
-        sb.append("# --- STEP 1: EXPORT INTERACTIVE 3D GLTF/GLB MODEL ---\n");
+        sb.append("# --- STEP 1: REMOVE MESH FOG DOMAINS & EXPORT CLEAN 3D GLB ---\n");
         sb.append("try:\n");
-        sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)\n");
+        sb.append("    # Purge any volumetric domain mesh cubes so they NEVER export as solid white blocks\n");
+        sb.append("    for _obj in list(bpy.data.objects):\n");
+        sb.append("        _n = _obj.name.lower()\n");
+        sb.append("        if ('fog' in _n or 'volume' in _n or 'domain' in _n or 'atmosphere' in _n) and _obj.type == 'MESH':\n");
+        sb.append("            bpy.data.objects.remove(_obj, do_unlink=True)\n");
+        sb.append("    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n");
         sb.append("    print('3D GLTF Export Successful: output/model.glb')\n");
         sb.append("except Exception as ge: print(f'GLTF export warning: {ge}')\n\n");
 
@@ -487,6 +498,9 @@ public class AIOrchestrator {
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_location\\s*=\\s*([^\\n;]+)", "$1.location = $2; $1.keyframe_insert(data_path='location')");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_rotation\\s*=\\s*([^\\n;]+)", "$1.rotation_euler = $2; $1.keyframe_insert(data_path='rotation_euler')");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')");
+
+        // 10. Auto-heal fog material variable name typo: f_mat -> fog_mat
+        code = code.replace("f_mat.node_tree", "fog_mat.node_tree");
 
         return code.trim();
     }
