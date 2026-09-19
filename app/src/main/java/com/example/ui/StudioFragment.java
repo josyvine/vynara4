@@ -222,7 +222,7 @@ public class StudioFragment extends Fragment {
             });
         }
 
-        // Universal animation loop: updates scrubber, time text, and character players across all scenes
+        // Universal animation loop: updates scrubber, time text, and node transform keyframes across all scenes
         animRunnable = new Runnable() {
             @Override
             public void run() {
@@ -238,6 +238,19 @@ public class StudioFragment extends Fragment {
                     if (seekbarTimeline != null) {
                         int progress = (int) ((currentPlaybackTime / maxTimelineDuration) * 100);
                         seekbarTimeline.setProgress(progress);
+                    }
+
+                    // Update node transform animation tracks (car driving, wheel rotation, motion paths)
+                    Scene activeScene = (engine != null && engine.getSceneManager() != null) 
+                            ? engine.getSceneManager().getActiveScene() : null;
+                    if (activeScene != null) {
+                        synchronized (activeScene) {
+                            for (SceneObject obj : activeScene.getObjects()) {
+                                if (obj != null) {
+                                    obj.updateAnimation(currentPlaybackTime);
+                                }
+                            }
+                        }
                     }
 
                     // Update character kinematic players if characters exist
@@ -284,6 +297,19 @@ public class StudioFragment extends Fragment {
                     tvAnimTime.setText(String.format(Locale.US, "%.1fs / %.1fs", seconds, maxTimelineDuration));
                     
                     if (fromUser) {
+                        // Seek node animations on user timeline scrub
+                        Scene activeScene = (engine != null && engine.getSceneManager() != null) 
+                                ? engine.getSceneManager().getActiveScene() : null;
+                        if (activeScene != null) {
+                            synchronized (activeScene) {
+                                for (SceneObject obj : activeScene.getObjects()) {
+                                    if (obj != null) {
+                                        obj.updateAnimation(seconds);
+                                    }
+                                }
+                            }
+                        }
+
                         for (Character c : runtime.getCharacterManager().getCharacterMap().values()) {
                             if (c.getAnimationPlayer() != null) {
                                 c.getAnimationPlayer().seek(seconds);
@@ -440,9 +466,17 @@ public class StudioFragment extends Fragment {
         });
     }
 
+    private float[] getAbsoluteWorldMatrix(SceneObject obj) {
+        if (obj == null || obj.getTransform() == null) return null;
+        SceneObject parent = obj.getParent();
+        float[] parentWorld = (parent != null) ? getAbsoluteWorldMatrix(parent) : null;
+        return obj.getTransform().getWorldMatrix(parentWorld);
+    }
+
     /**
      * Dynamically frames the camera on the primary 3D subject without hardcoding domain names.
-     * Evaluates geometric bounding spans to automatically separate the subject from oversized backdrop planes (>80m).
+     * Evaluates true world-space geometric bounding spans to automatically separate the subject
+     * from oversized backdrop planes (>80m).
      */
     public void autoFrameHeroOrScene() {
         if (engine == null || engine.getCameraManager() == null) return;
@@ -464,38 +498,39 @@ public class StudioFragment extends Fragment {
         float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
         boolean hasSubject = false;
 
-        // Dynamic Span Analysis: isolate the focused subject by excluding oversized environment planes (>80m span)
+        // Dynamic Span Analysis: isolate the focused subject by evaluating true world-space vertex positions
         for (SceneObject obj : flatList) {
             if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
             float[] verts = obj.getMesh().getVertices();
             if (verts.length == 0) continue;
 
+            float[] worldMat = getAbsoluteWorldMatrix(obj);
+            if (worldMat == null) continue;
+
             float oMinX = Float.POSITIVE_INFINITY, oMaxX = Float.NEGATIVE_INFINITY;
             float oMinZ = Float.POSITIVE_INFINITY, oMaxZ = Float.NEGATIVE_INFINITY;
 
             for (int v = 0; v < verts.length; v += 3) {
-                if (verts[v] < oMinX) oMinX = verts[v];
-                if (verts[v] > oMaxX) oMaxX = verts[v];
-                if (verts[v + 2] < oMinZ) oMinZ = verts[v + 2];
-                if (verts[v + 2] > oMaxZ) oMaxZ = verts[v + 2];
+                float vx = worldMat[0] * verts[v] + worldMat[4] * verts[v + 1] + worldMat[8] * verts[v + 2] + worldMat[12];
+                float vz = worldMat[2] * verts[v] + worldMat[6] * verts[v + 1] + worldMat[10] * verts[v + 2] + worldMat[14];
+                if (vx < oMinX) oMinX = vx;
+                if (vx > oMaxX) oMaxX = vx;
+                if (vz < oMinZ) oMinZ = vz;
+                if (vz > oMaxZ) oMaxZ = vz;
             }
 
             float spanX = Math.abs(oMaxX - oMinX);
             float spanZ = Math.abs(oMaxZ - oMinZ);
 
-            // Skip massive terrain/water/highway backdrop planes (>80m span) when targeting focal subject
+            // Skip massive backdrop planes (>80m span) when targeting focal subject
             if (spanX > 80.0f || spanZ > 80.0f) {
                 continue;
             }
 
-            float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
-            float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
-            float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
-
             for (int v = 0; v < verts.length; v += 3) {
-                float vx = px + verts[v];
-                float vy = py + verts[v + 1];
-                float vz = pz + verts[v + 2];
+                float vx = worldMat[0] * verts[v] + worldMat[4] * verts[v + 1] + worldMat[8] * verts[v + 2] + worldMat[12];
+                float vy = worldMat[1] * verts[v] + worldMat[5] * verts[v + 1] + worldMat[9] * verts[v + 2] + worldMat[13];
+                float vz = worldMat[2] * verts[v] + worldMat[6] * verts[v + 1] + worldMat[10] * verts[v + 2] + worldMat[14];
                 if (vx < minX) minX = vx;
                 if (vy < minY) minY = vy;
                 if (vz < minZ) minZ = vz;
@@ -511,14 +546,13 @@ public class StudioFragment extends Fragment {
             for (SceneObject obj : flatList) {
                 if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
                 float[] verts = obj.getMesh().getVertices();
-                float px = obj.getTransform() != null ? obj.getTransform().getPx() : 0f;
-                float py = obj.getTransform() != null ? obj.getTransform().getPy() : 0f;
-                float pz = obj.getTransform() != null ? obj.getTransform().getPz() : 0f;
+                float[] worldMat = getAbsoluteWorldMatrix(obj);
+                if (worldMat == null) continue;
 
                 for (int v = 0; v < verts.length; v += 3) {
-                    float vx = px + verts[v];
-                    float vy = py + verts[v + 1];
-                    float vz = pz + verts[v + 2];
+                    float vx = worldMat[0] * verts[v] + worldMat[4] * verts[v + 1] + worldMat[8] * verts[v + 2] + worldMat[12];
+                    float vy = worldMat[1] * verts[v] + worldMat[5] * verts[v + 1] + worldMat[9] * verts[v + 2] + worldMat[13];
+                    float vz = worldMat[2] * verts[v] + worldMat[6] * verts[v + 1] + worldMat[10] * verts[v + 2] + worldMat[14];
                     if (vx < minX) minX = vx;
                     if (vy < minY) minY = vy;
                     if (vz < minZ) minZ = vz;
