@@ -169,6 +169,8 @@ public class AICorrector {
                 ? userPrompt
                 : "Custom user-supplied Blender Python script (Prompt omitted). Refine geometry curvature, beveling, materials, and lighting based on the visual render preview.";
 
+        safePrompt += "\nCRITICAL SPATIAL AUDIT: Verify that car total length is exactly 4.5m, the road is 14m wide x 250m long flat at Z=0.0 with center dashes at Z=0.005 UP (0,0,1), tires sit flush on road at Z=0.0 starting at Y=5.0, car is parented to 'Model_Root' animated driving forward along Y to 80m, and camera tracks car from low dramatic 3/4 front angle.";
+
         String b64Ref = encodeImageFileToBase64(referenceImageFile);
         String b64Render = encodeImageFileToBase64(renderPreviewFile);
 
@@ -258,8 +260,14 @@ public class AICorrector {
                 "   - Lights must use `bpy.ops.object.light_add(type=...)`. Valid types: ('POINT', 'SUN', 'SPOT', 'AREA').\n" +
                 "   - Texture types in `bpy.data.textures.new(...)` MUST be one of: ('NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD').\n" +
                 "   - Principled BSDF socket names must conform to Blender 4.2+ ('Transmission Weight', 'Roughness', 'Metallic', 'Specular IOR Level').\n" +
-                "   - Ensure `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_skins=True, export_animations=True)` runs at the very end.\n" +
-                "6. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
+                "   - Ensure `bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=False, export_skins=True, export_animations=True)` runs at the very end.\n" +
+                "6. VEHICLE SPATIAL & ANIMATION MANDATES (STRICT 5 RULES):\n" +
+                "   - RULE 1: CAR SCALE NORMALIZATION: Imported cars are modeled in oversized millimeter/centimeter units. Calculate combined bounding box across all imported car sub-meshes. Scale the entire assembly down so its total length is exactly real-world automotive size: 4.5 meters. Apply all scale transforms.\n" +
+                "   - RULE 2: ROAD SCALE & ALIGNMENT: Build a realistic multi-lane asphalt highway matching the 4.5m car: 14 meters wide and at least 250 meters long, flat on ground at Z=0.0 running straight along Y-axis with rotation (0,0,0). Add center lane dashes at Z=0.005 with normal pointing straight UP (0,0,1).\n" +
+                "   - RULE 3: PLACING CAR ON ROAD: Center car in driving lane at X=0.0. Snap bottom-most point of tires flush on top of road at Z=0.0. Start car near beginning of road at Y=5.0.\n" +
+                "   - RULE 4: PARENTING & DRIVING ANIMATION: Create master Empty 'Model_Root' at car base. Parent all imported car sub-meshes to 'Model_Root' keeping relative assembly offsets intact. Animate 'Model_Root' driving along Y-axis from Y=5.0 at frame 1 to Y=80.0 at frame 60 using location keyframes. Find all wheel/tire meshes and animate them spinning around their axles proportional to driving speed.\n" +
+                "   - RULE 5: CINEMATIC CAMERA: Place camera tracking car from a low, dramatic, three-quarter front angle. Keyframe camera moving with car down highway to create a high-speed cinematic sequence.\n" +
+                "7. COMPLETE SCENE: Do not return partial snippets, comments like `# ... rest of code`, or placeholders. Return the full complete scene script.";
     }
 
     private String buildBlenderRepairUserPrompt(String userPrompt, String failedScript, String errorTraceback) {
@@ -286,6 +294,13 @@ public class AICorrector {
                   .append("- Replace `scene.view_settings.look = 'High Contrast'` with `scene.view_settings.look = 'AgX - High Contrast'`.\n\n");
             }
         }
+
+        sb.append("HEALING DIRECTIVE FOR VEHICLE SCENE INTEGRATION:\n")
+          .append("- Enforce Rule 1: Car length normalized to 4.5m across combined bounding box, scale transforms applied.\n")
+          .append("- Enforce Rule 2: Multi-lane asphalt road 14m wide x 250m long, Z=0.0, rotation (0,0,0), center dashes at Z=0.005 UP (0,0,1).\n")
+          .append("- Enforce Rule 3: Centered at X=0.0, tires flush on road at Z=0.0, start at Y=5.0.\n")
+          .append("- Enforce Rule 4: Master Empty 'Model_Root' parents all car sub-meshes, location keyframed Y=5.0 (frame 1) to Y=80.0 (frame 60), wheels spinning.\n")
+          .append("- Enforce Rule 5: Low dramatic 3/4 front tracking camera moving with car down highway.\n\n");
 
         sb.append("=== THE FAULTY SCRIPT THAT FAILED ===\n")
           .append(failedScript != null ? failedScript : "# No script content");
@@ -323,11 +338,13 @@ public class AICorrector {
         cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'");
         cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Medium High Contrast['\"]", "view_settings.look = 'AgX - Medium High Contrast'");
         cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'");
+        cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Base Contrast['\"]", "view_settings.look = 'AgX - Base Contrast'");
+        cleaned = cleaned.replaceAll("view_settings\\.look\\s*=\\s*['\"]Punchy['\"]", "view_settings.look = 'AgX - Punchy'");
 
         // Auto-sanitize unquoted f-strings
         cleaned = cleaned.replaceAll("(?<=[=\\s,(])f([a-zA-Z0-9_]+\\{[^}\"\\n]+\\}[a-zA-Z0-9_]*)", "f\"$1\"");
 
-        // Auto-sanitize hallucinated mesh and light operators
+        // Auto-sanitize hallucinated mesh, camera, and light operators
         cleaned = cleaned.replace("bpy.ops.object.mesh.", "bpy.ops.mesh.");
         cleaned = cleaned.replace("bpy.ops.light.add(", "bpy.ops.object.light_add(");
         cleaned = cleaned.replace("bpy.ops.camera.add(", "bpy.ops.object.camera_add(");
@@ -341,6 +358,17 @@ public class AICorrector {
         cleaned = cleaned.replace("['Transmission'].default_value", "['Transmission Weight'].default_value");
         cleaned = cleaned.replace("['Subsurface'].default_value", "['Subsurface Weight'].default_value");
         cleaned = cleaned.replace("['Specular'].default_value", "['Specular IOR Level'].default_value");
+        cleaned = cleaned.replaceAll("inputs\\[['\"]Transmission['\"]\\]", "inputs['Transmission Weight']");
+        cleaned = cleaned.replaceAll("inputs\\[['\"]Subsurface['\"]\\]", "inputs['Subsurface Weight']");
+        cleaned = cleaned.replaceAll("inputs\\[['\"]Specular['\"]\\]", "inputs['Specular IOR Level']");
+
+        // Auto-sanitize hallucinated object.keyframe_[xyz] axis assignments
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([xX])\\s*=\\s*([^\\n;]+)", "$1.location.x = $3; $1.keyframe_insert(data_path='location', index=0)");
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([yY])\\s*=\\s*([^\\n;]+)", "$1.location.y = $3; $1.keyframe_insert(data_path='location', index=1)");
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([zZ])\\s*=\\s*([^\\n;]+)", "$1.location.z = $3; $1.keyframe_insert(data_path='location', index=2)");
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_location\\s*=\\s*([^\\n;]+)", "$1.location = $2; $1.keyframe_insert(data_path='location')");
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_rotation\\s*=\\s*([^\\n;]+)", "$1.rotation_euler = $2; $1.keyframe_insert(data_path='rotation_euler')");
+        cleaned = cleaned.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')");
 
         return cleaned.trim();
     }
