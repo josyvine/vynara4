@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class GLTFImporter {
@@ -336,6 +337,7 @@ public class GLTFImporter {
             for (int n = 0; n < nodesJson.length(); n++) {
                 JSONObject nodeObj = nodesJson.getJSONObject(n);
                 String nodeName = nodeObj.optString("name", "node_" + n);
+                String lowerName = nodeName.toLowerCase(Locale.US);
 
                 SceneObject primaryObject = null;
 
@@ -359,6 +361,11 @@ public class GLTFImporter {
                             }
 
                             SceneObject sceneObject = new SceneObject("obj_" + n + "_" + p, nodeName + (p > 0 ? "_sub_" + p : ""), "MESH", mesh, mat);
+
+                            // Auto-hide volumetric fog boxes or domain meshes so they NEVER obstruct the scene as solid cubes
+                            if (lowerName.contains("fog") || lowerName.contains("volumetric") || lowerName.contains("domain") || lowerName.contains("atmosphere")) {
+                                sceneObject.setVisible(false);
+                            }
 
                             if (p == 0) {
                                 primaryObject = sceneObject;
@@ -559,7 +566,7 @@ public class GLTFImporter {
         // Yaw (Z-axis rotation)
         double cosy_cosp = 2.0 * (w * z + x * y);
         double siny_cosp = 1.0 - 2.0 * (y * y + z * z);
-        euler[2] = (float) Math.toDegrees(Math.atan2(cosy_cosp, siny_cosp));
+        euler[2] = (float) Math.toDegrees(Math.atan2(siny_cosp, cosy_cosp));
 
         return euler;
     }
