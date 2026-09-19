@@ -52,7 +52,7 @@ public class StudioFragment extends Fragment {
     private ImageButton btnAnimPlay;
     private boolean isPlaying = false;
     private float currentPlaybackTime = 0.0f;
-    private final float maxTimelineDuration = 3.5f;
+    private float maxTimelineDuration = 3.5f;
 
     private android.os.Handler animHandler;
     private Runnable animRunnable;
@@ -196,7 +196,6 @@ public class StudioFragment extends Fragment {
             });
         }
 
-        // Dynamic safe lookup for zoom/focus tool button if present in layout XML
         try {
             int zoomResId = getResources().getIdentifier("btn_tool_zoom", "id", requireContext().getPackageName());
             if (zoomResId == 0) {
@@ -235,7 +234,7 @@ public class StudioFragment extends Fragment {
                     if (tvAnimTime != null) {
                         tvAnimTime.setText(String.format(Locale.US, "%.1fs / %.1fs", currentPlaybackTime, maxTimelineDuration));
                     }
-                    if (seekbarTimeline != null) {
+                    if (seekbarTimeline != null && maxTimelineDuration > 0.001f) {
                         int progress = (int) ((currentPlaybackTime / maxTimelineDuration) * 100);
                         seekbarTimeline.setProgress(progress);
                     }
@@ -251,6 +250,8 @@ public class StudioFragment extends Fragment {
                                 }
                             }
                         }
+                        // Update world transforms so all child meshes follow parent transforms immediately
+                        engine.getSceneManager().updateWorldTransforms();
                     }
 
                     // Update character kinematic players if characters exist
@@ -308,6 +309,7 @@ public class StudioFragment extends Fragment {
                                     }
                                 }
                             }
+                            engine.getSceneManager().updateWorldTransforms();
                         }
 
                         for (Character c : runtime.getCharacterManager().getCharacterMap().values()) {
@@ -336,10 +338,6 @@ public class StudioFragment extends Fragment {
         }
     }
 
-    /**
-     * Touch Event Handler: Translates touch gestures into spherical camera orbit rotation,
-     * pinch zoom, and double-tap subject auto-centering.
-     */
     private void setupViewportTouchOrbitGesture() {
         if (glSurfaceView == null) return;
 
@@ -431,7 +429,6 @@ public class StudioFragment extends Fragment {
                             previousTouchX = x;
                             previousTouchY = y;
                         } else if (event.getPointerCount() > 1) {
-                            // Update anchor coordinates during multi-touch so single-touch does not jump
                             int pointerIndex = event.findPointerIndex(activePointerId);
                             if (pointerIndex != -1) {
                                 previousTouchX = event.getX(pointerIndex);
@@ -473,11 +470,6 @@ public class StudioFragment extends Fragment {
         return obj.getTransform().getWorldMatrix(parentWorld);
     }
 
-    /**
-     * Dynamically frames the camera on the primary 3D subject without hardcoding domain names.
-     * Evaluates true world-space geometric bounding spans to automatically separate the subject
-     * from oversized backdrop planes (>80m).
-     */
     public void autoFrameHeroOrScene() {
         if (engine == null || engine.getCameraManager() == null) return;
         Camera cam = engine.getCameraManager().getActiveCamera();
@@ -498,7 +490,6 @@ public class StudioFragment extends Fragment {
         float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
         boolean hasSubject = false;
 
-        // Dynamic Span Analysis: isolate the focused subject by evaluating true world-space vertex positions
         for (SceneObject obj : flatList) {
             if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
             float[] verts = obj.getMesh().getVertices();
@@ -522,7 +513,6 @@ public class StudioFragment extends Fragment {
             float spanX = Math.abs(oMaxX - oMinX);
             float spanZ = Math.abs(oMaxZ - oMinZ);
 
-            // Skip massive backdrop planes (>80m span) when targeting focal subject
             if (spanX > 80.0f || spanZ > 80.0f) {
                 continue;
             }
@@ -541,7 +531,6 @@ public class StudioFragment extends Fragment {
             }
         }
 
-        // Fallback: If all objects are large backdrops, frame across all visible geometry
         if (!hasSubject) {
             for (SceneObject obj : flatList) {
                 if (obj == null || !obj.isVisible() || obj.getMesh() == null || obj.getMesh().getVertices() == null) continue;
@@ -572,16 +561,11 @@ public class StudioFragment extends Fragment {
         }
     }
 
-    /**
-     * Spawns a procedural or primitive object into the scene (called by AI Assistant).
-     * Calculates smart placement in front of the camera if coordinates are default.
-     */
     public boolean spawnProceduralObject(String type, String name, float x, float y, float z, String colorHex) {
         if (engine == null) return false;
         try {
             runtime.getTransactionManager().beginTransaction("Spawn " + name);
 
-            // Smart placement: if position is at default (0,0,0), position it in front of the camera
             if (x == 0f && y == 0f && z == 0f && engine.getCameraManager() != null) {
                 Camera cam = engine.getCameraManager().getActiveCamera();
                 if (cam != null && cam.getTarget() != null) {
@@ -645,12 +629,18 @@ public class StudioFragment extends Fragment {
             runtime.getTransactionManager().beginTransaction("Import GLB Model");
 
             Scene activeScene = engine.getSceneManager().getActiveScene();
+            float detectedMaxDuration = 0f;
+
             if (activeScene != null) {
                 synchronized (activeScene) {
                     // Remove default placeholder cube if present to avoid dual-mesh stacking
                     activeScene.getObjects().removeIf(o -> "Cube".equalsIgnoreCase(o.getName()) || "default_cube".equalsIgnoreCase(o.getId()));
                     for (SceneObject obj : result.getSceneObjects()) {
                         activeScene.addObject(obj);
+                        float d = obj.getMaxAnimationDuration();
+                        if (d > detectedMaxDuration) {
+                            detectedMaxDuration = d;
+                        }
                     }
                 }
             }
@@ -658,6 +648,14 @@ public class StudioFragment extends Fragment {
             for (Character ch : result.getCharacters()) {
                 runtime.getCharacterManager().registerCharacter(ch);
             }
+
+            // Dynamically set timeline length matching imported model tracks
+            if (detectedMaxDuration > 0.1f) {
+                maxTimelineDuration = detectedMaxDuration;
+            } else {
+                maxTimelineDuration = 3.5f;
+            }
+            currentPlaybackTime = 0.0f;
 
             engine.getSceneManager().updateWorldTransforms();
 
@@ -675,6 +673,12 @@ public class StudioFragment extends Fragment {
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
                     updateStudioStatsUI();
+                    if (tvAnimTime != null) {
+                        tvAnimTime.setText(String.format(Locale.US, "0.0s / %.1fs", maxTimelineDuration));
+                    }
+                    if (seekbarTimeline != null) {
+                        seekbarTimeline.setProgress(0);
+                    }
                     String msg = "Imported: " + glbFile.getName();
                     if (currentRenderImageFile != null) {
                         msg += " (Cycles Render Ready)";
