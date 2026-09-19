@@ -171,6 +171,8 @@ public class GLTFImporter {
                 float metallic = 0.1f, roughness = 0.5f;
                 Bitmap baseTextureBitmap = null;
 
+                String alphaMode = matObj.optString("alphaMode", "OPAQUE");
+
                 JSONObject pbr = matObj.optJSONObject("pbrMetallicRoughness");
                 if (pbr != null) {
                     JSONArray baseColorArr = pbr.optJSONArray("baseColorFactor");
@@ -201,6 +203,9 @@ public class GLTFImporter {
                 Material material = new Material("mat_" + i, matName, r, g, b, a);
                 material.setMetallic(metallic);
                 material.setRoughness(roughness);
+                if ("BLEND".equalsIgnoreCase(alphaMode) || a < 0.99f) {
+                    material.setTransparent(true);
+                }
                 if (baseTextureBitmap != null) {
                     material.setTextureBitmap(baseTextureBitmap);
                 }
@@ -363,7 +368,7 @@ public class GLTFImporter {
 
                             SceneObject sceneObject = new SceneObject("obj_" + n + "_" + p, nodeName + (p > 0 ? "_sub_" + p : ""), "MESH", mesh, mat);
 
-                            // Auto-hide volumetric fog boxes or domain meshes so they NEVER obstruct the scene as solid cubes
+                            // Auto-hide volumetric fog boxes or domain meshes
                             if (lowerName.contains("fog") || lowerName.contains("volumetric") || lowerName.contains("domain") || lowerName.contains("atmosphere")) {
                                 sceneObject.setVisible(false);
                             }
@@ -372,7 +377,6 @@ public class GLTFImporter {
                                 primaryObject = sceneObject;
                                 applyNodeTransformToObject(nodeObj, primaryObject);
                             } else {
-                                // Add subsequent primitives as child objects to ensure unified translations
                                 if (primaryObject != null) {
                                     primaryObject.addChild(sceneObject);
                                 }
@@ -386,7 +390,7 @@ public class GLTFImporter {
                         }
                     }
                 } else {
-                    // Create an empty locator / transform node (tagged as EMPTY to distinguish from geometry)
+                    // Create an empty locator / transform node
                     primaryObject = new SceneObject("empty_node_" + n, nodeName, "EMPTY", null, null);
                     applyNodeTransformToObject(nodeObj, primaryObject);
                 }
@@ -451,10 +455,10 @@ public class GLTFImporter {
                                     float[] rawValues = readFloatAccessor(outputAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
 
                                     if (times != null && rawValues != null && times.length > 0) {
+                                        float[] finalValues;
                                         if ("rotation".equalsIgnoreCase(path)) {
-                                            // Convert quaternion [qx, qy, qz, qw] to Euler degrees [rx, ry, rz]
                                             int numKeys = times.length;
-                                            float[] eulerValues = new float[numKeys * 3];
+                                            finalValues = new float[numKeys * 3];
                                             for (int k = 0; k < numKeys; k++) {
                                                 int qOffset = k * 4;
                                                 if (qOffset + 3 < rawValues.length) {
@@ -463,17 +467,24 @@ public class GLTFImporter {
                                                     float qz = rawValues[qOffset + 2];
                                                     float qw = rawValues[qOffset + 3];
                                                     float[] euler = quaternionToEulerDegrees(qx, qy, qz, qw);
-                                                    eulerValues[k * 3] = euler[0];
-                                                    eulerValues[k * 3 + 1] = euler[1];
-                                                    eulerValues[k * 3 + 2] = euler[2];
+                                                    finalValues[k * 3] = euler[0];
+                                                    finalValues[k * 3 + 1] = euler[1];
+                                                    finalValues[k * 3 + 2] = euler[2];
                                                 }
                                             }
-                                            targetObj.addAnimationTrack("rotation", times, eulerValues);
+                                            targetObj.addAnimationTrack("rotation", times, finalValues);
                                         } else if ("translation".equalsIgnoreCase(path)) {
-                                            targetObj.addAnimationTrack("translation", times, rawValues);
+                                            finalValues = rawValues;
+                                            targetObj.addAnimationTrack("translation", times, finalValues);
                                         } else if ("scale".equalsIgnoreCase(path)) {
-                                            targetObj.addAnimationTrack("scale", times, rawValues);
+                                            finalValues = rawValues;
+                                            targetObj.addAnimationTrack("scale", times, finalValues);
+                                        } else {
+                                            finalValues = rawValues;
                                         }
+
+                                        // Recursively propagate tracks down through all child assemblies
+                                        propagateAnimationToChildren(targetObj, path, times, finalValues);
                                     }
                                 }
                             }
@@ -513,6 +524,31 @@ public class GLTFImporter {
 
         VynaraLogger.system("GLTFImporter: Import complete (" + sceneObjects.size() + " root objects, " + characters.size() + " rigged characters)");
         return new ImportResult(sceneObjects, characters);
+    }
+
+    private static void propagateAnimationToChildren(SceneObject parent, String path, float[] times, float[] values) {
+        if (parent == null || parent.getChildren() == null) return;
+        for (SceneObject child : parent.getChildren()) {
+            if (child != null) {
+                if ("translation".equalsIgnoreCase(path)) {
+                    // Offset child's relative position so multi-part assembly is preserved while in motion
+                    float ox = child.getTransform().getPositionX() - parent.getTransform().getPositionX();
+                    float oy = child.getTransform().getPositionY() - parent.getTransform().getPositionY();
+                    float oz = child.getTransform().getPositionZ() - parent.getTransform().getPositionZ();
+
+                    float[] offsetValues = new float[values.length];
+                    for (int k = 0; k < times.length; k++) {
+                        offsetValues[k * 3] = values[k * 3] + ox;
+                        offsetValues[k * 3 + 1] = values[k * 3 + 1] + oy;
+                        offsetValues[k * 3 + 2] = values[k * 3 + 2] + oz;
+                    }
+                    child.addAnimationTrack("translation", times, offsetValues);
+                } else {
+                    child.addAnimationTrack(path, times, values);
+                }
+                propagateAnimationToChildren(child, path, times, values);
+            }
+        }
     }
 
     private static float[] readFloatAccessor(int accessorIndex, JSONArray accessors, JSONArray bufferViews, byte[] binaryData) throws Exception {
