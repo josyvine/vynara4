@@ -254,31 +254,30 @@ public class AIOrchestrator {
                 sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
             sysInstBuilder.append("     imported_objs = [o for o in bpy.data.objects if o not in _before and o.type == 'MESH']\n");
-            sysInstBuilder.append("   - STEP 2: ASSEMBLY-WIDE DIMENSION NORMALIZATION:\n");
-            sysInstBuilder.append("     Calculate the collective bounding box across all `imported_objs`. If max span > 10.0m, scale the assembly down so primary length is 4.5m.\n");
-            sysInstBuilder.append("   - STEP 3: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
+            sysInstBuilder.append("   - STEP 2: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
             sysInstBuilder.append("     Create a master Empty object: root_empty = bpy.data.objects.new('Model_Root', None)\n");
             sysInstBuilder.append("     root_empty.empty_display_type = 'PLAIN_AXES'\n");
             sysInstBuilder.append("     bpy.context.collection.objects.link(root_empty)\n");
             sysInstBuilder.append("     for obj in imported_objs:\n");
             sysInstBuilder.append("         if not obj.parent:\n");
             sysInstBuilder.append("             obj.parent = root_empty\n");
-            sysInstBuilder.append("   - STEP 4: MANDATORY DRIVING ANIMATION:\n");
-            sysInstBuilder.append("     Keyframe `root_empty` driving forward along the road (Y axis): frame 1 at Y=0.0, frame 60 at Y=75.0m!\n");
-            sysInstBuilder.append("     root_empty.location = (0, 0, 0); root_empty.keyframe_insert(data_path='location', frame=1)\n");
-            sysInstBuilder.append("     root_empty.location = (0, 75, 0); root_empty.keyframe_insert(data_path='location', frame=60)\n");
-            sysInstBuilder.append("   - STEP 5: ROTATIONAL WHEEL SPIN:\n");
-            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel, insert keyframes rotating around its axle (X axis) proportional to distance traveled: e.g. frame 1 rx=0, frame 60 rx=-100.0.\n");
-            sysInstBuilder.append("   - STEP 6: REAL-WORLD HIGHWAY ROAD CONTRACT:\n");
-            sysInstBuilder.append("     Create a realistic asphalt highway: a flat rectangular plane located at Z = 0.0, width = 14.0m (X axis), length = 250.0m (Y axis along the direction of travel).\n");
-            sysInstBuilder.append("     Add dashed center lane markings: width = 0.2m, length = 3.0m, spaced every 6.0m along Y, clamped strictly to Z = 0.005 with normal vector pointing straight UP (0, 0, 1). NEVER leave stripes tilted or floating in mid-air!\n");
+            sysInstBuilder.append("   - STEP 3: MANDATORY DRIVING ANIMATION:\n");
+            sysInstBuilder.append("     Place `root_empty` on the road at location (0.0, 5.0, 0.0) at frame 1 and keyframe it.\n");
+            sysInstBuilder.append("     Keyframe `root_empty` driving forward along the road (Y axis): frame 1 at (0, 5, 0), frame 60 at (0, 80, 0)!\n");
+            sysInstBuilder.append("     root_empty.location = (0, 5, 0); root_empty.keyframe_insert(data_path='location', frame=1)\n");
+            sysInstBuilder.append("     root_empty.location = (0, 80, 0); root_empty.keyframe_insert(data_path='location', frame=60)\n");
+            sysInstBuilder.append("   - STEP 4: ROTATIONAL WHEEL SPIN:\n");
+            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel, insert keyframes rotating around its axle (X axis) proportional to distance: frame 1 rx=0, frame 60 rx=-110.0.\n");
+            sysInstBuilder.append("   - STEP 5: REAL-WORLD HIGHWAY ROAD CONTRACT:\n");
+            sysInstBuilder.append("     Create a realistic asphalt highway: a flat rectangular plane located at (0.0, 125.0, 0.0) with rotation (0, 0, 0), width = 14.0m (X axis), length = 250.0m (Y axis along the direction of travel).\n");
+            sysInstBuilder.append("     Add dashed center lane markings: width = 0.2m, length = 3.0m, spaced every 6.0m along Y from Y=0 to Y=250, clamped strictly to Z = 0.005 with normal vector pointing straight UP (0, 0, 1), rotation=(0, 0, 0). NEVER leave stripes tilted or floating in mid-air!\n");
         } else {
             sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
             sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
         }
 
         sysInstBuilder.append("3. DYNAMIC SPATIAL PLACEMENT: Inspect the primary subject's dimensions. Align its contact base naturally with the ground level (Z = 0). Never allow subjects to clip or submerge into the ground surface.\n");
-        sysInstBuilder.append("4. NO MESH VOLUMETRIC CUBES: NEVER create polygonal mesh boxes or cubes (`primitive_cube_add`) for fog or volumetrics. Volumetric effects must strictly use world shader nodes (`ShaderNodeVolumePrincipled`) connected to `World Output`.\n");
+        sysInstBuilder.append("4. NO MESH VOLUMETRIC CUBES: NEVER create polygonal mesh boxes or cubes (`primitive_cube_add`) for fog or volumetrics. glTF does not support 3D volume shaders and converts them into 100% opaque solid white boxes that block the scene. Volumetric effects must strictly use world shader nodes (`ShaderNodeVolumePrincipled`) connected to `World Output`.\n");
         sysInstBuilder.append("5. Create Principled BSDF materials using Blender 4.2+ socket names: 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color'.\n");
         sysInstBuilder.append("   In ShaderNodeBackground, the output socket is named 'Background' (bg.outputs['Background']), NEVER 'Color'.\n");
         sysInstBuilder.append("6. CRITICAL COLOR MANAGEMENT: In Blender 4.2, default view transform is 'AgX'. Valid looks are: 'AgX - High Contrast', 'AgX - Punchy', 'AgX - Base Contrast', 'None'.\n");
@@ -304,7 +303,7 @@ public class AIOrchestrator {
         promptBuilder.append("STYLE: ").append(style).append("\n");
         if (hasImportedModel) {
             promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model is normalized as 'inputs/input_model.glb'. ")
-                         .append("Import it, normalize assembly scale to 4.5m, parent all meshes to 'Model_Root', animate 'Model_Root' driving along Y (0 to 75m), animate wheel spin, build a full 14m x 250m highway at Z=0 with center lane dashes at Z=0.005, and rig lighting/cameras. Do not replace the model with cubes!\n");
+                         .append("Import it, parent all meshes to 'Model_Root', place 'Model_Root' at (0, 5, 0), animate 'Model_Root' driving along Y (5 to 80m), animate wheel spin, build a full 14m x 250m highway at Z=0 with center lane dashes at Z=0.005, and rig lighting/cameras. Do not replace the model with cubes!\n");
         }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
@@ -381,9 +380,14 @@ public class AIOrchestrator {
         sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
 
-        sb.append("# --- ASSEMBLY-WIDE SCALE NORMALIZATION (4.5M AUTOMOTIVE SCALE) ---\n");
+        sb.append("# --- ISOLATED VEHICLE SCALE NORMALIZATION ---\n");
         sb.append("try:\n");
-        sb.append("    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking'])]\n");
+        sb.append("    _root = bpy.data.objects.get('Model_Root') or bpy.data.objects.get('Car_Root')\n");
+        sb.append("    if _root:\n");
+        sb.append("        _car_meshes = [c for c in _root.children if c.type == 'MESH']\n");
+        sb.append("    else:\n");
+        sb.append("        _env_keys = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'cube']\n");
+        sb.append("        _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_keys)]\n");
         sb.append("    if _car_meshes:\n");
         sb.append("        _min_x, _min_y, _min_z = float('inf'), float('inf'), float('inf')\n");
         sb.append("        _max_x, _max_y, _max_z = float('-inf'), float('-inf'), float('-inf')\n");
@@ -563,7 +567,7 @@ public class AIOrchestrator {
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_([zZ])\\s*=\\s*([^\\n;]+)", "$1.location.z = $3; $1.keyframe_insert(data_path='location', index=2)");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_location\\s*=\\s*([^\\n;]+)", "$1.location = $2; $1.keyframe_insert(data_path='location')");
         code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_rotation\\s*=\\s*([^\\n;]+)", "$1.rotation_euler = $2; $1.keyframe_insert(data_path='rotation_euler')");
-        code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')");
+        code = code.replaceAll("(?m)([a-zA-Z0-9_]+)\\.keyframe_scale\\s*=\\s*([^\\n;]+)", "$1.scale = $2; $1.keyframe_insert(data_path='scale')", code);
 
         // 11. Auto-heal fog material variable name typo: f_mat -> fog_mat
         code = code.replace("f_mat.node_tree", "fog_mat.node_tree");
