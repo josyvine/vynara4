@@ -275,31 +275,26 @@ jobs:
           # Auto-Repair 23: Auto-repair scene.render.shutter -> scene.render.motion_blur_shutter
           bpy_script = re.sub(r"(\.render)\.shutter\b", r"\1.motion_blur_shutter", bpy_script)
 
-          # Auto-Repair 20: Purge volumetric fog mesh boxes before GLTF export so they NEVER export as solid white cubes
-          purge_fog_snippet = (
-              "\n    # Auto-Purge: remove mesh-based fog cubes so GLTF does not export them as solid white blocks\n"
-              "    for _o in list(bpy.data.objects):\n"
-              "        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['fog', 'volume', 'domain', 'atmosphere']):\n"
-              "            bpy.data.objects.remove(_o, do_unlink=True)\n"
-          )
-          if 'export_scene.gltf' in bpy_script:
-              bpy_script = re.sub(r"([ \t]*)(bpy\.ops\.export_scene\.gltf\()", r"\1" + purge_fog_snippet + r"\1\2", bpy_script, count=1)
-
-          # Auto-Repair 24: Ingestion Scale Normalizer (Centimeters -> Meters auto-conversion if dimensions exceed 80 units)
-          scale_normalizer_snippet = (
-              "\n    # Ingestion Auto-Normalizer: Scale down centimeter-scale assets (>80 units) to standard meters\n"
-              "    for _imported_obj in list(bpy.context.selected_objects):\n"
-              "        if _imported_obj.type == 'MESH':\n"
-              "            _max_dim = max(_imported_obj.dimensions)\n"
-              "            if _max_dim > 80.0:\n"
+          # Auto-Repair 24: Independent Top-Level Scale Normalizer (Column 0, no regex injection into try-blocks)
+          scale_normalizer_block = (
+              "\n\n# Independent Scale Normalizer: Scale down centimeter-scale assets (>80 units) to standard meters\n"
+              "try:\n"
+              "    for _obj in list(bpy.data.objects):\n"
+              "        if _obj.type == 'MESH':\n"
+              "            _max_d = max(_obj.dimensions)\n"
+              "            if _max_d > 80.0:\n"
               "                _scale_ratio = 0.01\n"
-              "                _imported_obj.scale = (_imported_obj.scale.x * _scale_ratio, _imported_obj.scale.y * _scale_ratio, _imported_obj.scale.z * _scale_ratio)\n"
-              "                bpy.context.view_layer.objects.active = _imported_obj\n"
+              "                _obj.scale = (_obj.scale.x * _scale_ratio, _obj.scale.y * _scale_ratio, _obj.scale.z * _scale_ratio)\n"
+              "                bpy.context.view_layer.objects.active = _obj\n"
               "                bpy.ops.object.transform_apply(scale=True)\n"
-              "                print(f'Ingestion Scale Normalizer: Normalized {_imported_obj.name} from {_max_dim:.1f}m to {max(_imported_obj.dimensions):.2f}m')\n"
+              "                print(f'Scale Normalizer: Scaled {_obj.name} from {_max_d:.1f}m down to {max(_obj.dimensions):.2f}m')\n"
+              "except Exception as _norm_err:\n"
+              "    print(f'Scale normalizer notice: {_norm_err}')\n"
           )
-          if 'import_scene.gltf' in bpy_script:
-              bpy_script = re.sub(r"([ \t]*)(bpy\.ops\.import_scene\.gltf\([^\)]*\))", r"\1\2\n" + scale_normalizer_snippet, bpy_script, count=1)
+          if '# --- STEP 1:' in bpy_script:
+              bpy_script = bpy_script.replace('# --- STEP 1:', scale_normalizer_block + '\n# --- STEP 1:')
+          else:
+              bpy_script += scale_normalizer_block
 
           # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
