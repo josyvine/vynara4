@@ -1,5 +1,7 @@
 package com.example.engine;
 
+import android.opengl.Matrix;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +34,7 @@ public class SceneObject {
 
     private final List<KeyframeTrack> animationTracks = new ArrayList<>();
     private Transform restTransform;
+    private final float[] worldMatrix = new float[16];
 
     public SceneObject(String id, String name, String semanticType, Mesh mesh, Material material) {
         this.id = id != null ? id : "obj_" + System.currentTimeMillis();
@@ -40,6 +43,7 @@ public class SceneObject {
         this.mesh = mesh;
         this.material = material;
         this.transform = new Transform();
+        Matrix.setIdentityM(this.worldMatrix, 0);
     }
 
     public String getId() { return id; }
@@ -114,6 +118,30 @@ public class SceneObject {
         return false;
     }
 
+    public float getMaxAnimationDuration() {
+        float max = 0f;
+        for (KeyframeTrack track : animationTracks) {
+            if (track.times != null && track.times.length > 0) {
+                float last = track.times[track.times.length - 1];
+                if (last > max) max = last;
+            }
+        }
+        for (SceneObject child : children) {
+            if (child != null) {
+                float childMax = child.getMaxAnimationDuration();
+                if (childMax > max) max = childMax;
+            }
+        }
+        return max;
+    }
+
+    /**
+     * Bridges with AnimationPlayer and external timeline controllers.
+     */
+    public void evaluateAnimationAtTime(float timeSeconds) {
+        updateAnimation(timeSeconds);
+    }
+
     /**
      * Evaluates animation tracks at the specified timestamp (in seconds)
      * and updates node transforms accordingly. Recursively updates child nodes.
@@ -139,6 +167,34 @@ public class SceneObject {
                 child.updateAnimation(timeSeconds);
             }
         }
+    }
+
+    public void resetToRestTransform() {
+        if (restTransform != null && transform != null) {
+            transform.setPosition(restTransform.getPx(), restTransform.getPy(), restTransform.getPz());
+            transform.setRotation(restTransform.getRx(), restTransform.getRy(), restTransform.getRz());
+            transform.setScale(restTransform.getSx(), restTransform.getSy(), restTransform.getSz());
+        }
+        for (SceneObject child : children) {
+            if (child != null) {
+                child.resetToRestTransform();
+            }
+        }
+    }
+
+    /**
+     * Calculates the full 4x4 World Transformation Matrix by multiplying
+     * this object's local matrix by all parent matrices up to the root.
+     */
+    public float[] getWorldMatrix() {
+        float[] local = transform.getModelMatrix();
+        if (parent != null) {
+            float[] parentWorld = parent.getWorldMatrix();
+            Matrix.multiplyMM(worldMatrix, 0, parentWorld, 0, local, 0);
+        } else {
+            System.arraycopy(local, 0, worldMatrix, 0, 16);
+        }
+        return worldMatrix;
     }
 
     private float[] sampleTrack(KeyframeTrack track, float t) {
@@ -183,11 +239,9 @@ public class SceneObject {
     }
 
     /**
-     * Phase 15 Alignment: Deep copies this scene object node and recursively
-     * duplicates its children sub-graph.
+     * Deep copies this scene object node and recursively duplicates its children sub-graph.
      */
     public SceneObject cloneNode(String newId, String newName) {
-        // Deep copy PBR material if present
         Material clonedMat = null;
         if (this.material != null) {
             clonedMat = this.material.cloneMaterial(
@@ -196,7 +250,6 @@ public class SceneObject {
             );
         }
 
-        // Share Mesh reference but isolate structural references
         SceneObject copy = new SceneObject(newId, newName, this.semanticType, this.mesh, clonedMat);
         copy.setVisible(this.isVisible);
         
