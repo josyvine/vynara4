@@ -27,11 +27,11 @@ jobs:
           sudo mkdir -p /opt/blender
           curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz | sudo tar -xJ --strip-components=1 -C /opt/blender
 
-      # Step 3: Install Virtual Display Server, Media Libraries & 3D Conversion Tools
-      - name: Install Headless Display Server (Xvfb), FFmpeg and Assimp
+      # Step 3: Install Virtual Display Server, Media Libraries, EGL Drivers & 3D Conversion Tools
+      - name: Install Headless Display Server (Xvfb), FFmpeg, EGL and Assimp
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb ffmpeg libsm6 libxext6 libgl1 assimp-utils
+          sudo apt-get install -y xvfb ffmpeg libsm6 libxext6 libgl1 libegl1 libgl1-mesa-dri assimp-utils
 
       # Step 4: Ingest and Auto-Convert Uploaded 3D Models (Resolves ASCII FBX limitation)
       - name: Ingest and Prepare 3D Model
@@ -269,6 +269,12 @@ jobs:
           # Auto-Repair 19: Auto-heal f_mat variable typo (f_mat -> fog_mat)
           bpy_script = re.sub(r"\bf_mat\b", "fog_mat", bpy_script)
 
+          # Auto-Repair 22: Auto-repair world.node_tree.nodes.link -> world.node_tree.links.new
+          bpy_script = re.sub(r"\.nodes\.link\(", ".links.new(", bpy_script)
+
+          # Auto-Repair 23: Auto-repair scene.render.shutter -> scene.render.motion_blur_shutter
+          bpy_script = re.sub(r"(\.render)\.shutter\b", r"\1.motion_blur_shutter", bpy_script)
+
           # Auto-Repair 20: Purge volumetric fog mesh boxes before GLTF export so they NEVER export as solid white cubes
           purge_fog_snippet = (
               "\n    # Auto-Purge: remove mesh-based fog cubes so GLTF does not export them as solid white blocks\n"
@@ -278,6 +284,22 @@ jobs:
           )
           if 'export_scene.gltf' in bpy_script:
               bpy_script = re.sub(r"([ \t]*)(bpy\.ops\.export_scene\.gltf\()", r"\1" + purge_fog_snippet + r"\1\2", bpy_script, count=1)
+
+          # Auto-Repair 24: Ingestion Scale Normalizer (Centimeters -> Meters auto-conversion if dimensions exceed 80 units)
+          scale_normalizer_snippet = (
+              "\n    # Ingestion Auto-Normalizer: Scale down centimeter-scale assets (>80 units) to standard meters\n"
+              "    for _imported_obj in list(bpy.context.selected_objects):\n"
+              "        if _imported_obj.type == 'MESH':\n"
+              "            _max_dim = max(_imported_obj.dimensions)\n"
+              "            if _max_dim > 80.0:\n"
+              "                _scale_ratio = 0.01\n"
+              "                _imported_obj.scale = (_imported_obj.scale.x * _scale_ratio, _imported_obj.scale.y * _scale_ratio, _imported_obj.scale.z * _scale_ratio)\n"
+              "                bpy.context.view_layer.objects.active = _imported_obj\n"
+              "                bpy.ops.object.transform_apply(scale=True)\n"
+              "                print(f'Ingestion Scale Normalizer: Normalized {_imported_obj.name} from {_max_dim:.1f}m to {max(_imported_obj.dimensions):.2f}m')\n"
+          )
+          if 'import_scene.gltf' in bpy_script:
+              bpy_script = re.sub(r"([ \t]*)(bpy\.ops\.import_scene\.gltf\([^\)]*\))", r"\1\2\n" + scale_normalizer_snippet, bpy_script, count=1)
 
           # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
@@ -316,7 +338,7 @@ jobs:
                   "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
               )
 
-          # Auto-Repair 21: Full Cinematic MP4 Animation Video Renderer (renders motion when keyframes exist)
+          # Auto-Repair 21: Full Cinematic MP4 Animation Video Renderer with Hardware Fallback
           anim_render_snippet = (
               "\n\n# Dynamic Cinematic Animation Video Exporter\n"
               "try:\n"
@@ -324,7 +346,6 @@ jobs:
               "    _sc = bpy.context.scene\n"
               "    if _sc.camera and _sc.frame_end > _sc.frame_start and not os.path.exists('output/cinematic.mp4'):\n"
               "        print(f'Rendering Cinematic MP4 Animation: frames {_sc.frame_start} to {_sc.frame_end}...')\n"
-              "        _sc.render.engine = 'BLENDER_EEVEE_NEXT'\n"
               "        _sc.render.resolution_x = 1280\n"
               "        _sc.render.resolution_y = 720\n"
               "        _sc.render.image_settings.file_format = 'FFMPEG'\n"
@@ -333,7 +354,15 @@ jobs:
               "        _sc.render.ffmpeg.constant_rate_factor = 'MEDIUM'\n"
               "        _sc.render.ffmpeg.ffmpeg_preset = 'REALTIME'\n"
               "        _sc.render.filepath = 'output/cinematic.mp4'\n"
-              "        bpy.ops.render.render(animation=True)\n"
+              "        try:\n"
+              "            _sc.render.engine = 'BLENDER_EEVEE_NEXT'\n"
+              "            bpy.ops.render.render(animation=True)\n"
+              "        except Exception as _eevee_err:\n"
+              "            print(f'EEVEE_NEXT fallback to fast Cycles: {_eevee_err}')\n"
+              "            _sc.render.engine = 'CYCLES'\n"
+              "            _sc.cycles.device = 'CPU'\n"
+              "            _sc.cycles.samples = 1\n"
+              "            bpy.ops.render.render(animation=True)\n"
               "        print('Cinematic MP4 video rendered successfully: output/cinematic.mp4')\n"
               "except Exception as _anim_err: print(f'Cinematic video export note: {_anim_err}')\n"
           )
