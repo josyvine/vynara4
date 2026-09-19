@@ -168,7 +168,7 @@ jobs:
 
           # --- AST & REGEX AUTO-REPAIR PIPELINE ---
 
-          # Auto-Repair 1: Neutralize unstable headless addon registrations (e.g. rigify, archimesh in 4.2)
+          # Auto-Repair 1: Neutralize unstable headless addon registrations
           bpy_script = re.sub(r"addon_utils\.enable\(['\"](?:rigify|archimesh)['\"]\)", "pass", bpy_script)
 
           # Auto-Repair 2: Fix unquoted node lookups
@@ -196,7 +196,7 @@ jobs:
           bpy_script = bpy_script.replace("'BLENDER_EEVEE'", "'BLENDER_EEVEE_NEXT'")
           bpy_script = bpy_script.replace('"BLENDER_EEVEE"', '"BLENDER_EEVEE_NEXT"')
 
-          # Auto-Repair 6: Blender 4.2+ AgX Color Management Look Enums (Fixes "High Contrast" enum error)
+          # Auto-Repair 6: Blender 4.2+ AgX Color Management Look Enums
           look_fixes = [
               (r"view_settings\.look\s*=\s*['\"]High Contrast['\"]", "view_settings.look = 'AgX - High Contrast'"),
               (r"view_settings\.look\s*=\s*['\"]Very High Contrast['\"]", "view_settings.look = 'AgX - Very High Contrast'"),
@@ -210,7 +210,7 @@ jobs:
           for pattern, replacement in look_fixes:
               bpy_script = re.sub(pattern, replacement, bpy_script)
 
-          # Auto-Repair 7: Wrap view_settings.look in try-except block to ensure immunity from look enum failures
+          # Auto-Repair 7: Wrap view_settings.look in try-except block
           bpy_script = re.sub(
               r"^([ \t]*)(.*view_settings\.look\s*=.*)$",
               r"\1try:\n\1    \2\n\1except Exception as _look_err: print(f'View settings look notice: {_look_err}')",
@@ -218,14 +218,14 @@ jobs:
               flags=re.MULTILINE
           )
 
-          # Auto-Repair 8: Redirect FBX imports to GLTF if converted or if model exists as GLB (Safe Quote Preservation)
+          # Auto-Repair 8: Redirect FBX imports to GLTF if converted or if model exists as GLB
           has_glb = os.path.exists('input_model.glb') or os.path.exists('inputs/input_model.glb')
           if has_glb:
               bpy_script = bpy_script.replace("bpy.ops.import_scene.fbx(", "bpy.ops.import_scene.gltf(")
               bpy_script = re.sub(r"(['\"])([^'\"\n]*?)\.fbx(['\"])", r"\1\2.glb\3", bpy_script)
               print("Auto-Repair: Successfully redirected scene FBX import to converted GLB format.")
 
-          # Auto-Repair 9: SCOPED Texture Type Fix (Never corrupt light or curve types!)
+          # Auto-Repair 9: SCOPED Texture Type Fix
           valid_tex = {'NONE', 'BLEND', 'CLOUDS', 'DISTORTED_NOISE', 'IMAGE', 'MAGIC', 'MARBLE', 'MUSGRAVE', 'NOISE', 'STUCCI', 'VORONOI', 'WOOD'}
           def fix_texture_type(m):
               prefix = m.group(1)
@@ -235,51 +235,6 @@ jobs:
                   tex_val = 'CLOUDS'
               return prefix + tex_val + suffix
           bpy_script = re.sub(r"(textures\.new\([^)]*type\s*=\s*['\"])([A-Za-z0-9_]+)(['\"])", fix_texture_type, bpy_script)
-
-          # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
-          if 'export_scene.gltf' not in bpy_script:
-              bpy_script += (
-                  "\n\n# Standard Model Exporter with Baked Modifiers\n"
-                  "import bpy, os\n"
-                  "os.makedirs('output', exist_ok=True)\n"
-                  "try:\n"
-                  "    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n"
-                  "    print('3D GLTF Export Successful: output/model.glb')\n"
-                  "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
-              )
-
-          # Auto-Repair 11: Production Denoised Cycles Snapshot (16 samples for rapid cloud execution)
-          if 'output/render.png' not in bpy_script:
-              bpy_script += (
-                  "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
-                  "try:\n"
-                  "    import os, math, bpy\n"
-                  "    if not os.path.exists('output/render.png'):\n"
-                  "        if not bpy.context.scene.camera:\n"
-                  "            bpy.ops.object.camera_add(location=(5, -5, 4), rotation=(math.radians(60), 0, math.radians(45)))\n"
-                  "            bpy.context.scene.camera = bpy.context.active_object\n"
-                  "        bpy.context.scene.render.engine = 'CYCLES'\n"
-                  "        bpy.context.scene.cycles.device = 'CPU'\n"
-                  "        bpy.context.scene.cycles.samples = 16\n"
-                  "        bpy.context.scene.cycles.use_denoising = True\n"
-                  "        bpy.context.scene.render.resolution_x = 1280\n"
-                  "        bpy.context.scene.render.resolution_y = 720\n"
-                  "        bpy.context.scene.render.filepath = 'output/render.png'\n"
-                  "        bpy.ops.render.render(write_still=True)\n"
-                  "        print('Production Cycles snapshot complete: output/render.png')\n"
-                  "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
-              )
-
-          # Auto-Repair 12: Project State Checkpoint for Option B2 Interactive Sessions
-          if 'bpy.ops.wm.save_as_mainfile' not in bpy_script:
-              bpy_script += (
-                  "\n\n# Save Checkpoint Project for Interactive Iteration\n"
-                  "try:\n"
-                  "    import bpy\n"
-                  "    bpy.ops.wm.save_as_mainfile(filepath='output/project.blend')\n"
-                  "    print('Saved project checkpoint: output/project.blend')\n"
-                  "except Exception as pe: print(f'Blend save note: {pe}')\n"
-              )
 
           # Auto-Repair 13: Fix Background shader socket name ('Color' -> 'Background')
           bpy_script = re.sub(r"(\.outputs\[['\"])Color(['\"]\]\s*,\s*[^,\n]*?inputs\[['\"])Surface(['\"]\])", r"\1Background\2Surface\3", bpy_script)
@@ -310,6 +265,90 @@ jobs:
           bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_location\s*=\s*([^\n;]+)", r"\1.location = \2; \1.keyframe_insert(data_path='location')", bpy_script)
           bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_rotation\s*=\s*([^\n;]+)", r"\1.rotation_euler = \2; \1.keyframe_insert(data_path='rotation_euler')", bpy_script)
           bpy_script = re.sub(r"([a-zA-Z0-9_]+)\.keyframe_scale\s*=\s*([^\n;]+)", r"\1.scale = \2; \1.keyframe_insert(data_path='scale')", bpy_script)
+
+          # Auto-Repair 19: Auto-heal f_mat variable typo (f_mat -> fog_mat)
+          bpy_script = re.sub(r"\bf_mat\b", "fog_mat", bpy_script)
+
+          # Auto-Repair 20: Purge volumetric fog mesh boxes before GLTF export so they NEVER export as solid white cubes
+          purge_fog_snippet = (
+              "\n    # Auto-Purge: remove mesh-based fog cubes so GLTF does not export them as solid white blocks\n"
+              "    for _o in list(bpy.data.objects):\n"
+              "        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['fog', 'volume', 'domain', 'atmosphere']):\n"
+              "            bpy.data.objects.remove(_o, do_unlink=True)\n"
+          )
+          if 'export_scene.gltf' in bpy_script:
+              bpy_script = re.sub(r"([ \t]*)(bpy\.ops\.export_scene\.gltf\()", r"\1" + purge_fog_snippet + r"\1\2", bpy_script, count=1)
+
+          # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
+          if 'export_scene.gltf' not in bpy_script:
+              bpy_script += (
+                  "\n\n# Standard Model Exporter with Baked Modifiers\n"
+                  "import bpy, os\n"
+                  "os.makedirs('output', exist_ok=True)\n"
+                  "try:\n"
+                  "    for _o in list(bpy.data.objects):\n"
+                  "        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['fog', 'volume', 'domain', 'atmosphere']):\n"
+                  "            bpy.data.objects.remove(_o, do_unlink=True)\n"
+                  "    bpy.ops.export_scene.gltf(filepath='output/model.glb', export_format='GLB', export_apply=True, export_skins=True, export_animations=True)\n"
+                  "    print('3D GLTF Export Successful: output/model.glb')\n"
+                  "except Exception as ge: print(f'GLTF export warning: {ge}')\n"
+              )
+
+          # Auto-Repair 11: Production Denoised Cycles Snapshot (16 samples for rapid cloud execution)
+          if 'output/render.png' not in bpy_script:
+              bpy_script += (
+                  "\n\n# High-Fidelity Denoised Viewport Snapshot\n"
+                  "try:\n"
+                  "    import os, math, bpy\n"
+                  "    if not os.path.exists('output/render.png'):\n"
+                  "        if not bpy.context.scene.camera:\n"
+                  "            bpy.ops.object.camera_add(location=(5, -5, 4), rotation=(math.radians(60), 0, math.radians(45)))\n"
+                  "            bpy.context.scene.camera = bpy.context.active_object\n"
+                  "        bpy.context.scene.render.engine = 'CYCLES'\n"
+                  "        bpy.context.scene.cycles.device = 'CPU'\n"
+                  "        bpy.context.scene.cycles.samples = 16\n"
+                  "        bpy.context.scene.cycles.use_denoising = True\n"
+                  "        bpy.context.scene.render.resolution_x = 1280\n"
+                  "        bpy.context.scene.render.resolution_y = 720\n"
+                  "        bpy.context.scene.render.filepath = 'output/render.png'\n"
+                  "        bpy.ops.render.render(write_still=True)\n"
+                  "        print('Production Cycles snapshot complete: output/render.png')\n"
+                  "except Exception as snap_e: print(f'Snapshot generation note: {snap_e}')\n"
+              )
+
+          # Auto-Repair 21: Full Cinematic MP4 Animation Video Renderer (renders motion when keyframes exist)
+          anim_render_snippet = (
+              "\n\n# Dynamic Cinematic Animation Video Exporter\n"
+              "try:\n"
+              "    import bpy, os\n"
+              "    _sc = bpy.context.scene\n"
+              "    if _sc.camera and _sc.frame_end > _sc.frame_start and not os.path.exists('output/cinematic.mp4'):\n"
+              "        print(f'Rendering Cinematic MP4 Animation: frames {_sc.frame_start} to {_sc.frame_end}...')\n"
+              "        _sc.render.engine = 'BLENDER_EEVEE_NEXT'\n"
+              "        _sc.render.resolution_x = 1280\n"
+              "        _sc.render.resolution_y = 720\n"
+              "        _sc.render.image_settings.file_format = 'FFMPEG'\n"
+              "        _sc.render.ffmpeg.format = 'MPEG4'\n"
+              "        _sc.render.ffmpeg.codec = 'H264'\n"
+              "        _sc.render.ffmpeg.constant_rate_factor = 'MEDIUM'\n"
+              "        _sc.render.ffmpeg.ffmpeg_preset = 'REALTIME'\n"
+              "        _sc.render.filepath = 'output/cinematic.mp4'\n"
+              "        bpy.ops.render.render(animation=True)\n"
+              "        print('Cinematic MP4 video rendered successfully: output/cinematic.mp4')\n"
+              "except Exception as _anim_err: print(f'Cinematic video export note: {_anim_err}')\n"
+          )
+          bpy_script += anim_render_snippet
+
+          # Auto-Repair 12: Project State Checkpoint for Option B2 Interactive Sessions
+          if 'bpy.ops.wm.save_as_mainfile' not in bpy_script:
+              bpy_script += (
+                  "\n\n# Save Checkpoint Project for Interactive Iteration\n"
+                  "try:\n"
+                  "    import bpy\n"
+                  "    bpy.ops.wm.save_as_mainfile(filepath='output/project.blend')\n"
+                  "    print('Saved project checkpoint: output/project.blend')\n"
+                  "except Exception as pe: print(f'Blend save note: {pe}')\n"
+              )
 
           with open('run_task.py', 'w', encoding='utf-8') as f:
               f.write(bpy_script)
