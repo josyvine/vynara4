@@ -239,6 +239,8 @@ public class AIOrchestrator {
             sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists!\n");
             sysInstBuilder.append("   - STEP 1: Import the model using the following fault-tolerant import block:\n");
             sysInstBuilder.append("     import os, bpy\n");
+            sysInstBuilder.append("     imported_objs = []\n");
+            sysInstBuilder.append("     _before = set(bpy.data.objects)\n");
             sysInstBuilder.append("     if os.path.exists('inputs/input_model.glb'):\n");
             sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             sysInstBuilder.append("     elif os.path.exists('input_model.glb'):\n");
@@ -254,8 +256,23 @@ public class AIOrchestrator {
             } else {
                 sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
-            sysInstBuilder.append("   - STEP 2: Inspect `bpy.context.selected_objects` to reference the imported root and sub-assemblies.\n");
-            sysInstBuilder.append("   - STEP 3: Script ONLY the surrounding environment matching USER PROMPT, movement/animation paths, parenting, lighting, and camera tracking around this imported model.\n");
+            sysInstBuilder.append("     imported_objs = [o for o in bpy.data.objects if o not in _before and o.type == 'MESH']\n");
+            sysInstBuilder.append("   - STEP 2: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
+            sysInstBuilder.append("     Create a master Empty object to drive the imported model:\n");
+            sysInstBuilder.append("     root_empty = bpy.data.objects.new('Model_Root', None)\n");
+            sysInstBuilder.append("     root_empty.empty_display_type = 'PLAIN_AXES'\n");
+            sysInstBuilder.append("     bpy.context.collection.objects.link(root_empty)\n");
+            sysInstBuilder.append("     for obj in imported_objs:\n");
+            sysInstBuilder.append("         if not obj.parent:\n");
+            sysInstBuilder.append("             obj.parent = root_empty\n");
+            sysInstBuilder.append("   - STEP 3: ANIMATE THE MASTER ROOT:\n");
+            sysInstBuilder.append("     ALL driving/moving location and rotation keyframes MUST be applied directly to `root_empty`! ");
+            sysInstBuilder.append("     For example, keyframe `root_empty.location.y` from 0 to 40 meters over frames 1 to 60 using root_empty.keyframe_insert(data_path='location', frame=f).\n");
+            sysInstBuilder.append("   - STEP 4: WHEEL ROTATION DYNAMICS:\n");
+            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel found, keyframe its local rotation around its axle (e.g. `w.rotation_euler.x = -speed * f`) so wheels visibly roll!\n");
+            sysInstBuilder.append("   - STEP 5: ROAD & ENVIRONMENT GROUND CLAMPING:\n");
+            sysInstBuilder.append("     Any road, asphalt, or terrain MUST be a flat horizontal plane strictly located at Z = 0.0. ");
+            sysInstBuilder.append("     Lane stripes must be flat rectangular planes lying on the road at Z = 0.005 with normal vector pointing straight UP (0, 0, 1). NEVER tilt lane markings or leave them floating disconnected in mid-air!\n");
         } else {
             sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
             sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
@@ -271,7 +288,7 @@ public class AIOrchestrator {
         sysInstBuilder.append("7. PROMPT-DRIVEN ANIMATION & CAMERA MOTION:\n");
         sysInstBuilder.append("   - If and only if the USER PROMPT requests motion, action, or animation (e.g. driving, running, flying, rotating, cinematic camera move):\n");
         sysInstBuilder.append("     * Configure frame range: `bpy.context.scene.frame_start = 1` and `bpy.context.scene.frame_end = 60` (or 90 for longer sequences).\n");
-        sysInstBuilder.append("     * Animate the primary subject and its moving components along realistic trajectories matching the described action.\n");
+        sysInstBuilder.append("     * Animate the primary subject/root and its moving components along realistic trajectories matching the described action.\n");
         sysInstBuilder.append("     * Animate the camera (tracking, panning, or orbiting) to capture the cinematic action.\n");
         sysInstBuilder.append("     * Insert keyframes using `obj.keyframe_insert(data_path='location', frame=f)` and `obj.keyframe_insert(data_path='rotation_euler', frame=f)`.\n");
         sysInstBuilder.append("     * NEVER write `obj.keyframe_y = ...` or `obj.keyframe_x = ...`.\n");
@@ -280,7 +297,8 @@ public class AIOrchestrator {
         sysInstBuilder.append("10. Lighting & Camera operators: ALWAYS use `bpy.ops.object.light_add(type='SUN'|'POINT'|'SPOT'|'AREA', location=...)` and `bpy.ops.object.camera_add(location=...)`. NEVER use `bpy.ops.light.add`.\n");
         sysInstBuilder.append("11. Do not include GUI/context-dependent operators that fail in headless mode.\n");
         sysInstBuilder.append("12. Organize objects cleanly with descriptive names and parent them logically.\n");
-        sysInstBuilder.append("13. HEADLESS RUNNER CPU MANDATE: NEVER inspect or query GPU devices. NEVER call get_devices(). Always use: `bpy.context.scene.cycles.device = 'CPU'`.");
+        sysInstBuilder.append("13. HEADLESS RUNNER CPU MANDATE: NEVER inspect or query GPU devices. NEVER call get_devices(). Always use: `bpy.context.scene.cycles.device = 'CPU'`.\n");
+        sysInstBuilder.append("14. SHADER NODES CREATION RULE: NEVER write `nodes.ShaderNodeOutputMaterial(...)` or `nodes.ShaderNodeBsdfPrincipled(...)`. In Blender, that causes an immediate AttributeError. ALWAYS use: `node = nodes.new(type='ShaderNodeOutputMaterial')` and set its location via `node.location = (x, y)`.");
 
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
@@ -288,7 +306,7 @@ public class AIOrchestrator {
         if (hasImportedModel) {
             promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model (format: ").append(modelExt.toUpperCase(Locale.ROOT))
                          .append(") is normalized in the workspace as 'inputs/input_model.glb'. ")
-                         .append("Import it directly using GLTF/GLB import and direct the scene/animation/camera around it. Do not sculpt a replacement subject from cubes!\n");
+                         .append("Import it, parent its meshes to 'Model_Root', animate 'Model_Root' and the wheels, place a ground road clamped strictly to Z=0, and direct lighting/camera around it. Do not replace the model with cubes!\n");
         }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
@@ -363,6 +381,19 @@ public class AIOrchestrator {
 
         sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
+
+        sb.append("# --- ROAD & GROUND POST-PROCESS NORMALIZATION ---\n");
+        sb.append("try:\n");
+        sb.append("    for _o in list(bpy.data.objects):\n");
+        sb.append("        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['stripe', 'lane', 'marking', 'dash']):\n");
+        sb.append("            _o.location.z = 0.005\n");
+        sb.append("            _o.rotation_euler.x = 0.0\n");
+        sb.append("            _o.rotation_euler.y = 0.0\n");
+        sb.append("        elif _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['road', 'highway', 'asphalt']):\n");
+        sb.append("            _o.location.z = 0.0\n");
+        sb.append("            _o.rotation_euler.x = 0.0\n");
+        sb.append("            _o.rotation_euler.y = 0.0\n");
+        sb.append("except Exception as _norm_err: print(f'Road clamp note: {_norm_err}')\n\n");
 
         sb.append("# --- CINEMATIC LIGHTING & CAMERA RIG ---\n");
         float focalLength = (spec != null && spec.getFocalLengthMm() > 0) ? spec.getFocalLengthMm() : 50.0f;
@@ -511,6 +542,10 @@ public class AIOrchestrator {
 
         // 11. Auto-heal fog material variable name typo: f_mat -> fog_mat
         code = code.replace("f_mat.node_tree", "fog_mat.node_tree");
+
+        // 12. Auto-sanitize hallucinated nodes.ShaderNode* constructor syntax
+        code = code.replaceAll("(?m)([a-zA-Z0-9_]*nodes?)\\.(ShaderNode[A-Za-z0-9_]+)\\(\\s*location\\s*=\\s*(\\([^)]+\\))\\s*\\)", "$1.new(type='$2')");
+        code = code.replaceAll("(?m)([a-zA-Z0-9_]*nodes?)\\.(ShaderNode[A-Za-z0-9_]+)\\(\\)", "$1.new(type='$2')");
 
         return code.trim();
     }
