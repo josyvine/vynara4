@@ -420,7 +420,7 @@ public class GLTFImporter {
                 }
             }
 
-            // 5c. Parse glTF Animation Channels into SceneObject Node Transform Tracks
+            // 5c. Parse glTF Animation Channels directly to their targeted SceneObjects
             if (animationsJson != null && accessorsJson != null && bufferViewsJson != null) {
                 for (int a = 0; a < animationsJson.length(); a++) {
                     JSONObject animObj = animationsJson.optJSONObject(a);
@@ -456,10 +456,9 @@ public class GLTFImporter {
                                     float[] rawValues = readFloatAccessor(outputAccessorIdx, accessorsJson, bufferViewsJson, binaryBuffer);
 
                                     if (times != null && rawValues != null && times.length > 0) {
-                                        float[] finalValues;
                                         if ("rotation".equalsIgnoreCase(path)) {
                                             int numKeys = times.length;
-                                            finalValues = new float[numKeys * 3];
+                                            float[] finalValues = new float[numKeys * 3];
                                             for (int k = 0; k < numKeys; k++) {
                                                 int qOffset = k * 4;
                                                 if (qOffset + 3 < rawValues.length) {
@@ -475,17 +474,10 @@ public class GLTFImporter {
                                             }
                                             targetObj.addAnimationTrack("rotation", times, finalValues);
                                         } else if ("translation".equalsIgnoreCase(path)) {
-                                            finalValues = rawValues;
-                                            targetObj.addAnimationTrack("translation", times, finalValues);
+                                            targetObj.addAnimationTrack("translation", times, rawValues);
                                         } else if ("scale".equalsIgnoreCase(path)) {
-                                            finalValues = rawValues;
-                                            targetObj.addAnimationTrack("scale", times, finalValues);
-                                        } else {
-                                            finalValues = rawValues;
+                                            targetObj.addAnimationTrack("scale", times, rawValues);
                                         }
-
-                                        // Recursively propagate tracks down through all child assemblies
-                                        propagateAnimationToChildren(targetObj, path, times, finalValues);
                                     }
                                 }
                             }
@@ -494,7 +486,7 @@ public class GLTFImporter {
                 }
             }
 
-            // 5d. Only return Root-level SceneObjects
+            // 5d. Only return Root-level SceneObjects (nested children are rendered recursively via matrix hierarchy)
             for (SceneObject obj : allPrimaryObjects) {
                 if (obj.getParent() == null) {
                     sceneObjects.add(obj);
@@ -525,30 +517,6 @@ public class GLTFImporter {
 
         VynaraLogger.system("GLTFImporter: Import complete (" + sceneObjects.size() + " root objects, " + characters.size() + " rigged characters)");
         return new ImportResult(sceneObjects, characters);
-    }
-
-    private static void propagateAnimationToChildren(SceneObject parent, String path, float[] times, float[] values) {
-        if (parent == null || parent.getChildren() == null) return;
-        for (SceneObject child : parent.getChildren()) {
-            if (child != null) {
-                if ("translation".equalsIgnoreCase(path) && child.getTransform() != null && parent.getTransform() != null) {
-                    float ox = child.getTransform().getPx() - parent.getTransform().getPx();
-                    float oy = child.getTransform().getPy() - parent.getTransform().getPy();
-                    float oz = child.getTransform().getPz() - parent.getTransform().getPz();
-
-                    float[] offsetValues = new float[values.length];
-                    for (int k = 0; k < times.length; k++) {
-                        offsetValues[k * 3] = values[k * 3] + ox;
-                        offsetValues[k * 3 + 1] = values[k * 3 + 1] + oy;
-                        offsetValues[k * 3 + 2] = values[k * 3 + 2] + oz;
-                    }
-                    child.addAnimationTrack("translation", times, offsetValues);
-                } else {
-                    child.addAnimationTrack(path, times, values);
-                }
-                propagateAnimationToChildren(child, path, times, values);
-            }
-        }
     }
 
     private static float[] readFloatAccessor(int accessorIndex, JSONArray accessors, JSONArray bufferViews, byte[] binaryData) throws Exception {
