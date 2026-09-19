@@ -78,9 +78,15 @@ public class DirectorAgent {
         promptBuilder.append("REQUESTED STYLE: ").append(style).append("\n");
 
         if (!attached3DModels.isEmpty()) {
-            promptBuilder.append("ACTIVE 3D MODEL ATTACHED: The scene contains an imported 3D mesh asset: ")
+            promptBuilder.append("ACTIVE 3D MODEL ATTACHED: The scene contains an imported 3D car mesh asset: ")
                          .append(String.join(", ", attached3DModels))
-                         .append(". Worker 1 must import the normalized asset (inputs/input_model.glb) into the scene rather than generating a replacement placeholder chassis.\n");
+                         .append(". Worker 1 must import the normalized asset (inputs/input_model.glb) into the scene rather than generating a replacement placeholder chassis.\n")
+                         .append("CRITICAL SPATIAL & ANIMATION RULES TO MANDATE ACROSS WORKERS:\n")
+                         .append("1. CAR SCALE NORMALIZATION: Calculate combined bounding box across all imported car sub-meshes and scale assembly down so total length is exactly 4.5 meters. Apply all scale transforms.\n")
+                         .append("2. ROAD SCALE & ALIGNMENT: Build a 14m wide by 250m long multi-lane asphalt highway flat on ground at Z=0.0 running straight along Y-axis with rotation (0,0,0). Add center lane dashes at Z=0.005 with normal pointing straight UP (0,0,1).\n")
+                         .append("3. PLACING CAR ON ROAD: Center the car in driving lane at X=0.0, snap tire bottoms flush to road at Z=0.0, and start at Y=5.0.\n")
+                         .append("4. PARENTING & DRIVING ANIMATION: Create master Empty 'Model_Root' at base, parent all car sub-meshes keeping relative assembly offsets intact, animate driving along Y from Y=5.0 at frame 1 to Y=80.0 at frame 60, and animate wheel spin around axles proportional to speed.\n")
+                         .append("5. CINEMATIC CAMERA: Place camera tracking car from a low, dramatic, three-quarter front angle, keyframed moving with car down highway.\n");
         }
 
         if (!base64Images.isEmpty()) {
@@ -161,9 +167,12 @@ public class DirectorAgent {
         promptBuilder.append("IMPORTED ASSET NAME: ").append(modelName).append("\n");
         promptBuilder.append("INFERRED CATEGORY: ").append(modelCategory).append("\n");
         promptBuilder.append("DIRECTIVE: Generate a high-speed, cinematic, photorealistic sequence. ")
-                     .append("If category is 'Vehicle', generate procedural road spline, guardrails, automated wheel rotation drivers ")
-                     .append("(angular velocity = linear speed / wheel radius), shrinkwrap ground sensors, rear-wheel low-angle camera framing, ")
-                     .append("and 180-degree optical shutter motion blur. No static poly placeholders. Import model from inputs/input_model.glb.");
+                     .append("Import model from inputs/input_model.glb. Follow strict spatial and animation rules:\n")
+                     .append("1. CAR SCALE NORMALIZATION: Calculate combined bounding box across all imported car meshes and scale assembly down so total length is exactly 4.5 meters. Apply all scale transforms.\n")
+                     .append("2. ROAD SCALE & ALIGNMENT: Build multi-lane asphalt highway 14 meters wide and at least 250 meters long, flat at Z=0.0 running straight along Y-axis with rotation (0,0,0). Add center lane dashes at Z=0.005 with normal pointing straight UP (0,0,1).\n")
+                     .append("3. PLACING CAR ON ROAD: Center car in driving lane at X=0.0, snap bottom-most point of tires flush on road surface at Z=0.0, start car at Y=5.0.\n")
+                     .append("4. PARENTING & DRIVING ANIMATION: Create master Empty 'Model_Root' at base, parent all imported car sub-meshes keeping relative assembly offsets intact, animate 'Model_Root' driving along Y from Y=5.0 at frame 1 to Y=80.0 at frame 60, and animate wheel spinning around axles proportional to driving speed.\n")
+                     .append("5. CINEMATIC CAMERA: Place camera tracking car from a low, dramatic, three-quarter front angle, keyframed moving with the car down highway.");
 
         VynaraLogger.system("DirectorAgent: Formulating autonomous asset animation spec for [" + modelName + "]...");
 
@@ -216,26 +225,27 @@ public class DirectorAgent {
                 "- You NEVER write Python code or Blender operators directly.\n" +
                 "- Your job is to analyze the user's prompt, imported asset context, and reference images, and decompose the scene into a structured 4-Worker dynamic specification.\n" +
                 "- Never settle for generic primitives or low-poly cubes. Define aerodynamic curvatures, bevels, architectural cantilevers, and authentic wheel orientations.\n\n" +
-                "CINEMATIC DIRECTIVES:\n" +
-                "1. Worker 1 (Structure & Environment):\n" +
-                "   - Define primary volume, chassis, or building envelope.\n" +
-                "   - If an imported 3D asset exists, instruct Worker 1 to import it from 'inputs/input_model.glb' (or 'inputs/input_model.fbx').\n" +
-                "   - For driving/high-speed shots: define a procedural road ribbon with asphalt, curbs, steel guardrails, and street lamps along a path curve.\n" +
-                "   - Always specify bevel radius (e.g. 0.04m - 0.08m) and smooth shading.\n" +
-                "2. Worker 2 (Details, Kinematics & Rigging):\n" +
-                "   - If vehicle: autonomously identify/rig 4 vertical wheels (90 deg on X/Y axis), brake calipers, and chassis.\n" +
-                "   - Bind automated wheel spin drivers tied to forward displacement (rotation = distance / radius).\n" +
-                "   - Bind axle ground sensors (Shrinkwrap constraint targeting the road surface).\n" +
+                "CINEMATIC DIRECTIVES FOR VEHICLE SCENES:\n" +
+                "1. Worker 1 (Structure, Model Scale & Road Geometry):\n" +
+                "   - Import asset from 'inputs/input_model.glb' (or 'input_model.glb').\n" +
+                "   - MANDATORY SCALE NORMALIZATION: Calculate combined bounding box across all imported car sub-meshes and scale the assembly down so its total length is exactly 4.5 meters. Apply all scale transforms.\n" +
+                "   - Build multi-lane asphalt highway: 14 meters wide (X axis) and at least 250 meters long (Y axis), flat on ground at Z=0.0 running straight along Y-axis with rotation (0,0,0).\n" +
+                "   - Add center lane dashes at Z=0.005 with normal pointing straight UP (0,0,1).\n" +
+                "2. Worker 2 (Placement, Parenting, Kinematics & Driving Animation):\n" +
+                "   - PLACEMENT: Center the car in driving lane at X=0.0, snap bottom-most point of tires flush to road at Z=0.0, start car at Y=5.0.\n" +
+                "   - PARENTING: Create master Empty object 'Model_Root' at base, parent all imported car sub-meshes to 'Model_Root' keeping relative assembly offsets intact.\n" +
+                "   - DRIVING ANIMATION: Animate 'Model_Root' driving along Y-axis from Y=5.0 at frame 1 to Y=80.0 at frame 60 with linear interpolation.\n" +
+                "   - WHEEL ROTATION: Identify wheel/tire meshes and keyframe rotational spin around axles proportional to speed (e.g. -214.28 rad over 75m).\n" +
                 "3. Worker 3 (PBR Materials & Shaders):\n" +
-                "   - Conforming to Blender 4.2+ Principled BSDF.\n" +
-                "   - High-detail 4K asphalt with normal map pebble bump, roughness variations, and wet/dry bitumen specular.\n" +
-                "   - Metallic car paint with clearcoat, darkened glass transmission (0.9), and matte tire rubber.\n" +
+                "   - Conforming to Blender 4.2+ Principled BSDF socket names ('Transmission Weight', 'Roughness', 'Metallic', 'Base Color').\n" +
+                "   - High-detail 4K asphalt with pebble bump, roughness variations, and bitumen specular.\n" +
+                "   - Metallic car paint with clearcoat, darkened glass transmission, and matte tire rubber.\n" +
                 "4. Worker 4 (Cinematics, Camera Optics & Lighting):\n" +
-                "   - Low-angle ground clearance camera (15cm off ground, positioned outside rear wheel arch pointing forward along car flank).\n" +
-                "   - Wide-angle focal length (18mm - 24mm) to amplify speed parallax.\n" +
-                "   - Depth of field locked to rear rim (f/2.8).\n" +
+                "   - Low, dramatic, three-quarter front angle camera tracking the car.\n" +
+                "   - Keyframe camera moving with the car down the highway (e.g. from Y=10.5 at frame 1 to Y=85.5 at frame 60) with Track To targeting Model_Root.\n" +
+                "   - 35mm focal length to amplify cinematic motion and depth.\n" +
                 "   - Enable 180-degree optical motion blur (shutter = 0.5) to streak road lines and spin wheels.\n" +
-                "   - Low-horizon Sun lighting with rim-light highlights, lens flare, and strict Blender 4.2 AgX color management ('AgX - High Contrast').\n\n" +
+                "   - Low-horizon Sun lighting with rim-light highlights and strict Blender 4.2 AgX color management ('AgX - High Contrast').\n\n" +
                 "OUTPUT RAW STRICT JSON ONLY (NO MARKDOWN FENCES):\n" +
                 "{\n" +
                 "  \"sceneType\": \"string\",\n" +
@@ -243,17 +253,17 @@ public class DirectorAgent {
                 "  \"visualStyleNotes\": \"string\",\n" +
                 "  \"objectCategory\": \"vehicle | architecture | character | nature | prop\",\n" +
                 "  \"workers\": {\n" +
-                "    \"w1_structure\": \"Structural guidelines, chassis envelope or procedural road curve with guardrails\",\n" +
-                "    \"w2_details\": \"Sub-part hardware, wheel spin drivers, shrinkwrap ground sensors, and props\",\n" +
-                "    \"w3_materials\": \"PBR shader properties: 4K asphalt, metallic paint, glass transmission, tire rubber\",\n" +
-                "    \"w4_cinematics\": \"Low ground clearance camera (18mm-24mm), rear-wheel lock, 180 deg motion blur, AgX sun lighting\"\n" +
+                "    \"w1_structure\": \"Import car, scale normalize to 4.5m, build 14m x 250m road flat at Z=0 with center dashes at Z=0.005 UP (0,0,1)\",\n" +
+                "    \"w2_details\": \"Center at X=0, snap tires flush at Z=0, start at Y=5, parent to Model_Root, animate Y 5m to 80m, animate wheel spin\",\n" +
+                "    \"w3_materials\": \"PBR shader properties: 4K asphalt, metallic car paint, glass transmission, tire rubber\",\n" +
+                "    \"w4_cinematics\": \"Low dramatic 3/4 front angle tracking camera moving with car down highway, 180 deg motion blur, AgX sun lighting\"\n" +
                 "  },\n" +
                 "  \"camera\": {\n" +
-                "    \"focalLengthMm\": 20.0,\n" +
+                "    \"focalLengthMm\": 35.0,\n" +
                 "    \"apertureFStop\": 2.8,\n" +
-                "    \"focusDistance\": 1.2,\n" +
-                "    \"position\": [0.95, -1.8, 0.25],\n" +
-                "    \"target\": [0.85, 1.5, 0.35]\n" +
+                "    \"focusDistance\": 5.5,\n" +
+                "    \"position\": [-2.8, 10.5, 0.95],\n" +
+                "    \"target\": [0.0, 5.0, 0.5]\n" +
                 "  },\n" +
                 "  \"lighting\": {\n" +
                 "    \"useVolumetrics\": true,\n" +
@@ -290,35 +300,37 @@ public class DirectorAgent {
         }
 
         switch (workerIndex) {
-            case 1: // Worker 1: Core Structure & Procedural Environment
-                sb.append("\nTASK: WORKER 1 (STRUCTURE & ENVIRONMENT)\n")
+            case 1: // Worker 1: Core Structure, 4.5m Scale Normalization & 14m x 250m Highway
+                sb.append("\nTASK: WORKER 1 (STRUCTURE, SCALE NORMALIZATION & ROAD)\n")
                   .append("- If an imported 3D asset is in 'inputs/', import it using `bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')` (or 'input_model.glb').\n")
-                  .append("- Generate primary structural geometry or procedural road spline with curbs, barrier guardrail, and lamp poles.\n")
-                  .append("- If car: build aerodynamic chassis envelope or position imported asset at origin.\n")
-                  .append("- Always add BEVEL modifier (width=0.04, segments=3) and enable smooth shading (`bpy.ops.object.shade_smooth()`).\n")
+                  .append("- RULE 1: CAR SCALE NORMALIZATION: Calculate combined bounding box across all imported car sub-meshes and scale assembly down so total length is exactly 4.5 meters. Apply all scale transforms.\n")
+                  .append("- RULE 2: ROAD SCALE & ALIGNMENT: Build a multi-lane asphalt highway plane: 14 meters wide (X axis) and at least 250 meters long (Y axis). It must lie flat on ground at Z=0.0 running straight along Y-axis with rotation (0,0,0).\n")
+                  .append("- Add center lane dashes at Z=0.005 with normal pointing straight UP (0,0,1).\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
-            case 2: // Worker 2: Details, Hardware & Autonomous Rigging
-                sb.append("\nTASK: WORKER 2 (DETAILS, HARDWARE & RIGGING)\n")
-                  .append("- Generate detailed sub-assemblies (e.g. 4 wheels rotated 90 deg, brake calipers, rims, glass, road barriers).\n")
-                  .append("- For driving shots: automatically calculate wheel radius and add rotational drivers (rotation = distance / radius).\n")
-                  .append("- Add ground shrinkwrap constraint to project wheel axles onto the road surface.\n")
+            case 2: // Worker 2: Placement, Master Root Parenting & Driving Animation
+                sb.append("\nTASK: WORKER 2 (PLACEMENT, PARENTING & DRIVING ANIMATION)\n")
+                  .append("- RULE 3: PLACING CAR ON ROAD: Center the car in driving lane at X=0.0, snap bottom-most point of tires flush to road surface at Z=0.0, start car at Y=5.0.\n")
+                  .append("- RULE 4: PARENTING & DRIVING ANIMATION: Create master Empty object 'Model_Root' at car base. Parent all imported car sub-meshes to 'Model_Root' keeping relative assembly offsets intact.\n")
+                  .append("- Animate 'Model_Root' driving forward along Y-axis from Y=5.0 at frame 1 to Y=80.0 at frame 60 using location keyframes with linear interpolation.\n")
+                  .append("- Find all wheel/tire meshes and animate them spinning around their axles proportional to driving speed (distance=75m -> -214.28 rad).\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
             case 3: // Worker 3: PBR Materials & Shaders
                 sb.append("\nTASK: WORKER 3 (PBR MATERIALS)\n")
-                  .append("- Configure Principled BSDF materials using Blender 4.2+ socket names (e.g. 'Transmission Weight', 'Roughness', 'Metallic').\n")
+                  .append("- Configure Principled BSDF materials using Blender 4.2+ socket names (e.g. 'Transmission Weight', 'Roughness', 'Metallic', 'Base Color').\n")
                   .append("- Road: 4K asphalt procedural texture with pebble bump and roughness variations.\n")
                   .append("- Vehicle: Metallic car paint with clearcoat, matte rubber on tires, and chrome on rims.\n")
                   .append("- Output raw Blender Python code inside ```python.");
                 break;
-            case 4: // Worker 4: Cinematics, Optical Motion Blur & Lighting
+            case 4: // Worker 4: Cinematics, Low 3/4 Front Tracking Camera, Motion Blur & Lighting
             default:
-                sb.append("\nTASK: WORKER 4 (CINEMATICS, MOTION BLUR & LIGHTING)\n")
-                  .append("- Position wide-angle camera (18mm - 24mm) low to the ground (0.2m) beside rear-left wheel, looking forward.\n")
-                  .append("- Parent camera to vehicle chassis so it tracks perfectly with movement.\n")
-                  .append("- Configure Depth of Field (f/2.8) locked on the rear wheel.\n")
-                  .append("- CRITICAL: Enable Motion Blur in render settings (`scene.render.use_motion_blur = True`, shutter=0.5) to produce authentic speed streaks.\n")
+                sb.append("\nTASK: WORKER 4 (CINEMATICS, TRACKING CAMERA & LIGHTING)\n")
+                  .append("- RULE 5: CINEMATIC CAMERA: Place camera tracking car from a low, dramatic, three-quarter front angle.\n")
+                  .append("- Keyframe camera moving with the car down the highway (location from (-2.8, 10.5, 0.95) at frame 1 to (-2.8, 85.5, 0.95) at frame 60).\n")
+                  .append("- Set Track To constraint targeting 'Model_Root'.\n")
+                  .append("- Configure 35mm lens with Depth of Field (f/2.8).\n")
+                  .append("- Enable Motion Blur in render settings (`scene.render.use_motion_blur = True`, shutter=0.5) to produce authentic speed streaks.\n")
                   .append("- Set color management look using Blender 4.2 AgX enums: `scene.view_settings.look = 'AgX - High Contrast'`. NEVER use legacy 'High Contrast'.\n")
                   .append("- Add low-elevation Sun light (18-25 deg) for golden rim highlights and render MP4 preview.\n")
                   .append("- Output raw Blender Python code inside ```python.");
