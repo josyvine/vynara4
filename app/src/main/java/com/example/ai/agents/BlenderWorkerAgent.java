@@ -106,7 +106,7 @@ public class BlenderWorkerAgent {
             master.append("# Scene: ").append(spec.getSceneType()).append(" | Mood: ").append(spec.getMood()).append("\n");
         }
         master.append("# ==========================================\n\n");
-        master.append("import bpy, os, math, random, sys, traceback\n");
+        master.append("import bpy, os, math, random, sys, traceback, mathutils\n");
         master.append("import addon_utils\n\n");
 
         master.append("os.makedirs('output', exist_ok=True)\n\n");
@@ -165,8 +165,8 @@ public class BlenderWorkerAgent {
 
     /**
      * Dynamically builds Worker 1 (Structure) using real procedural shaping, subdivision,
-     * and boolean carving, or loads an uploaded 3D asset (.fbx, .glb, .obj, .gltf)
-     * prioritizing normalized GLB to prevent ASCII FBX runtime rejections.
+     * and boolean carving, or loads an uploaded 3D asset (.fbx, .glb, .obj, .gltf),
+     * normalizing the car assembly scale to exactly 4.5m total length (Rule 1).
      */
     private static String buildWorker1StructureScript(String promptOrCode, AIDirectorSpec spec) {
         if (promptOrCode == null) return "";
@@ -200,53 +200,63 @@ public class BlenderWorkerAgent {
         sb.append("    bsdf_b.inputs['Roughness'].default_value = 0.05\n");
         sb.append("    bsdf_b.inputs['Metallic'].default_value = 0.9\n\n");
 
-        // Check for user-uploaded 3D model (checking inputs/ and workspace, prioritizing normalized GLB)
-        sb.append("# Check for user imported asset model in workspace (prioritizing normalized GLB)\n");
+        // Check for user-uploaded 3D model (prioritizing normalized GLB)
+        sb.append("# Ingest user imported 3D asset model in workspace\n");
         sb.append("imported_car = None\n");
         sb.append("glb_path = 'inputs/input_model.glb' if os.path.exists('inputs/input_model.glb') else ('input_model.glb' if os.path.exists('input_model.glb') else None)\n");
         sb.append("fbx_path = 'inputs/input_model.fbx' if os.path.exists('inputs/input_model.fbx') else ('input_model.fbx' if os.path.exists('input_model.fbx') else None)\n");
         sb.append("gltf_path = 'inputs/input_model.gltf' if os.path.exists('inputs/input_model.gltf') else ('input_model.gltf' if os.path.exists('input_model.gltf') else None)\n");
         sb.append("obj_path = 'inputs/input_model.obj' if os.path.exists('inputs/input_model.obj') else ('input_model.obj' if os.path.exists('input_model.obj') else None)\n\n");
 
+        sb.append("imported_mesh_list = []\n");
         sb.append("if glb_path:\n");
         sb.append("    print(f'Loading normalized 3D GLB model: {glb_path}...')\n");
+        sb.append("    _b4 = set(bpy.data.objects)\n");
         sb.append("    bpy.ops.import_scene.gltf(filepath=glb_path)\n");
-        sb.append("    for obj in bpy.context.selected_objects:\n");
-        sb.append("        if obj.type == 'MESH' and ('body' in obj.name.lower() or 'chassis' in obj.name.lower() or imported_car is None):\n");
-        sb.append("            imported_car = obj\n");
-        sb.append("    if imported_car:\n");
-        sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("    imported_mesh_list = [o for o in bpy.data.objects if o not in _b4 and o.type == 'MESH']\n");
         sb.append("elif fbx_path:\n");
         sb.append("    print(f'Loading user-provided 3D FBX model: {fbx_path}...')\n");
         sb.append("    try:\n");
+        sb.append("        _b4 = set(bpy.data.objects)\n");
         sb.append("        bpy.ops.import_scene.fbx(filepath=fbx_path)\n");
-        sb.append("        for obj in bpy.context.selected_objects:\n");
-        sb.append("            if obj.type == 'MESH':\n");
-        sb.append("                obj_name = obj.name.lower()\n");
-        sb.append("                if 'wheel' in obj_name or 'tire' in obj_name or 'rim' in obj_name:\n");
-        sb.append("                    pass\n");
-        sb.append("                elif 'body' in obj_name or 'chassis' in obj_name or imported_car is None:\n");
-        sb.append("                    imported_car = obj\n");
-        sb.append("        if imported_car:\n");
-        sb.append("            imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("        imported_mesh_list = [o for o in bpy.data.objects if o not in _b4 and o.type == 'MESH']\n");
         sb.append("    except Exception as fe:\n");
         sb.append("        print(f'FBX import fallback notice: {fe}')\n");
         sb.append("elif gltf_path:\n");
         sb.append("    print(f'Loading user-provided 3D GLTF model: {gltf_path}...')\n");
+        sb.append("    _b4 = set(bpy.data.objects)\n");
         sb.append("    bpy.ops.import_scene.gltf(filepath=gltf_path)\n");
-        sb.append("    for obj in bpy.context.selected_objects:\n");
-        sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
-        sb.append("            imported_car = obj\n");
-        sb.append("    if imported_car:\n");
-        sb.append("        imported_car.name = 'Vehicle_Chassis'\n");
+        sb.append("    imported_mesh_list = [o for o in bpy.data.objects if o not in _b4 and o.type == 'MESH']\n");
         sb.append("elif obj_path:\n");
         sb.append("    print(f'Loading user-provided 3D OBJ model: {obj_path}...')\n");
+        sb.append("    _b4 = set(bpy.data.objects)\n");
         sb.append("    bpy.ops.wm.obj_import(filepath=obj_path)\n");
-        sb.append("    for obj in bpy.context.selected_objects:\n");
-        sb.append("        if obj.type == 'MESH' and imported_car is None:\n");
-        sb.append("            imported_car = obj\n");
-        sb.append("    if imported_car:\n");
-        sb.append("        imported_car.name = 'Vehicle_Chassis'\n\n");
+        sb.append("    imported_mesh_list = [o for o in bpy.data.objects if o not in _b4 and o.type == 'MESH']\n\n");
+
+        sb.append("# RULE 1: CAR SCALE NORMALIZATION ACROSS COMBINED BOUNDING BOX\n");
+        sb.append("if imported_mesh_list:\n");
+        sb.append("    _min_x, _min_y, _min_z = float('inf'), float('inf'), float('inf')\n");
+        sb.append("    _max_x, _max_y, _max_z = float('-inf'), float('-inf'), float('-inf')\n");
+        sb.append("    for _m in imported_mesh_list:\n");
+        sb.append("        for _corner in _m.bound_box:\n");
+        sb.append("            _w = _m.matrix_world @ mathutils.Vector(_corner)\n");
+        sb.append("            _min_x = min(_min_x, _w.x); _max_x = max(_max_x, _w.x)\n");
+        sb.append("            _min_y = min(_min_y, _w.y); _max_y = max(_max_y, _w.y)\n");
+        sb.append("            _min_z = min(_min_z, _w.z); _max_z = max(_max_z, _w.z)\n");
+        sb.append("    _dim_x = _max_x - _min_x; _dim_y = _max_y - _min_y\n");
+        sb.append("    _total_len = max(_dim_x, _dim_y)\n");
+        sb.append("    if _total_len > 0.001:\n");
+        sb.append("        _scale_factor = 4.5 / _total_len\n");
+        sb.append("        _cx = (_min_x + _max_x) * 0.5; _cy = (_min_y + _max_y) * 0.5; _bz = _min_z\n");
+        sb.append("        print(f'Normalizing imported car assembly length from {_total_len:.3f}m to 4.5m')\n");
+        sb.append("        for _m in imported_mesh_list:\n");
+        sb.append("            _m.location.x = (_m.location.x - _cx) * _scale_factor\n");
+        sb.append("            _m.location.y = (_m.location.y - _cy) * _scale_factor\n");
+        sb.append("            _m.location.z = (_m.location.z - _bz) * _scale_factor\n");
+        sb.append("            _m.scale = (_m.scale.x * _scale_factor, _m.scale.y * _scale_factor, _m.scale.z * _scale_factor)\n");
+        sb.append("            bpy.context.view_layer.objects.active = _m\n");
+        sb.append("            bpy.ops.object.transform_apply(location=True, rotation=False, scale=True)\n");
+        sb.append("    imported_car = imported_mesh_list[0]\n\n");
 
         boolean isVehicle = p.contains("car") || p.contains("vehicle") || p.contains("suv") 
                 || p.contains("sedan") || p.contains("truck") || p.contains("drive") || p.contains("speed")
@@ -254,7 +264,7 @@ public class BlenderWorkerAgent {
 
         if (isVehicle) {
             sb.append("if not imported_car:\n");
-            sb.append("    # Procedural Aerodynamic Car Body with Subsurf & Boolean Wheel Wells\n");
+            sb.append("    # Procedural Aerodynamic Car Body with Subsurf & Boolean Wheel Wells (4.5m length)\n");
             sb.append("    bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.7))\n");
             sb.append("    chassis = bpy.context.active_object\n");
             sb.append("    chassis.name = 'Vehicle_Chassis'\n");
@@ -366,8 +376,8 @@ public class BlenderWorkerAgent {
     }
 
     /**
-     * Builds Worker 2: Details, Road Infrastructure, Guardrail Barrier,
-     * Ground Sensors (Shrinkwrap), and Automated Wheel Rotation Drivers.
+     * Builds Worker 2: Details, Road Infrastructure (14m x 250m at Z=0), Center Dashes (Z=0.005 UP),
+     * Master Root Empty Parenting, Lane Placement (X=0, Y=5, Z=0), and Driving Animation (Y: 5 -> 80m).
      */
     private static String buildWorker2DetailsScript(AIDirectorSpec spec) {
         StringBuilder sb = new StringBuilder();
@@ -387,89 +397,89 @@ public class BlenderWorkerAgent {
         boolean isVehicle = sceneType.contains("vehicle") || sceneType.contains("car") || sceneType.contains("drive") || sceneType.contains("speed");
 
         if (isVehicle) {
-            sb.append("# Procedural Road Ribbon (40m High-Speed Straight Track)\n");
-            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 10.0, 0.0))\n");
+            sb.append("# RULE 2: REALISTIC MULTI-LANE HIGHWAY ROAD (14m wide x 250m long, Z=0.0, rotation (0,0,0))\n");
+            sb.append("bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0.0, 125.0, 0.0))\n");
             sb.append("road = bpy.context.active_object\n");
-            sb.append("road.name = 'Road_Surface'\n");
-            sb.append("road.scale = (6.0, 60.0, 0.1)\n");
-            sb.append("bpy.ops.object.transform_apply(scale=True)\n");
+            sb.append("road.name = 'Highway_Road'\n");
+            sb.append("road.rotation_euler = (0.0, 0.0, 0.0)\n");
+            sb.append("road.dimensions = (14.0, 250.0, 0.0)\n");
+            sb.append("bpy.context.view_layer.objects.active = road\n");
+            sb.append("bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)\n");
             sb.append("road.data.materials.append(mat_road)\n\n");
 
-            sb.append("# White Shoulder Lane Markings\n");
-            sb.append("mat_stripe = bpy.data.materials.new('Mat_White_Stripe')\n");
-            sb.append("mat_stripe.use_nodes = True\n");
-            sb.append("bsdf_s = mat_stripe.node_tree.nodes.get('Principled BSDF')\n");
-            sb.append("if bsdf_s: bsdf_s.inputs['Base Color'].default_value = (0.9, 0.9, 0.9, 1.0); bsdf_s.inputs['Roughness'].default_value = 0.4\n");
-            sb.append("bpy.ops.mesh.primitive_plane_add(size=1, location=(1.5, 10.0, 0.055))\n");
-            sb.append("stripe = bpy.context.active_object\n");
-            sb.append("stripe.scale = (0.15, 60.0, 1.0)\n");
-            sb.append("bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("stripe.data.materials.append(mat_stripe)\n\n");
+            sb.append("# Center lane dashes at Z = 0.005 with normal pointing straight UP (0, 0, 1)\n");
+            sb.append("mat_dash = bpy.data.materials.new('Mat_Lane_Dash')\n");
+            sb.append("mat_dash.use_nodes = True\n");
+            sb.append("bsdf_d = mat_dash.node_tree.nodes.get('Principled BSDF')\n");
+            sb.append("if bsdf_d:\n");
+            sb.append("    bsdf_d.inputs['Base Color'].default_value = (1.0, 1.0, 1.0, 1.0)\n");
+            sb.append("    bsdf_d.inputs['Roughness'].default_value = 0.25\n");
+            sb.append("for _idx in range(1, 40):\n");
+            sb.append("    _dy = _idx * 6.0\n");
+            sb.append("    if _dy > 245.0: break\n");
+            sb.append("    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0.0, _dy, 0.005))\n");
+            sb.append("    _dash = bpy.context.active_object\n");
+            sb.append("    _dash.name = f'Lane_Dash_{_idx}'\n");
+            sb.append("    _dash.rotation_euler = (0.0, 0.0, 0.0)\n");
+            sb.append("    _dash.dimensions = (0.2, 3.0, 0.0)\n");
+            sb.append("    _dash.data.materials.append(mat_dash)\n\n");
 
-            sb.append("# Metal Guardrail Barrier (High Parallax Speed Streaks)\n");
+            sb.append("# Metal Guardrail Barrier along Highway\n");
             sb.append("mat_guard = bpy.data.materials.new('Mat_Galvanized_Steel')\n");
             sb.append("mat_guard.use_nodes = True\n");
             sb.append("bsdf_gd = mat_guard.node_tree.nodes.get('Principled BSDF')\n");
-            sb.append("if bsdf_gd: bsdf_gd.inputs['Base Color'].default_value = (0.7, 0.72, 0.74, 1.0); bsdf_gd.inputs['Metallic'].default_value = 0.9; bsdf_gd.inputs['Roughness'].default_value = 0.25\n");
-            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(2.2, 10.0, 0.55))\n");
+            sb.append("if bsdf_gd:\n");
+            sb.append("    bsdf_gd.inputs['Base Color'].default_value = (0.7, 0.72, 0.74, 1.0)\n");
+            sb.append("    bsdf_gd.inputs['Metallic'].default_value = 0.9\n");
+            sb.append("    bsdf_gd.inputs['Roughness'].default_value = 0.25\n");
+            sb.append("bpy.ops.mesh.primitive_cube_add(size=1, location=(6.8, 125.0, 0.55))\n");
             sb.append("guardrail = bpy.context.active_object\n");
             sb.append("guardrail.name = 'Highway_Guardrail'\n");
-            sb.append("guardrail.scale = (0.08, 60.0, 0.35)\n");
+            sb.append("guardrail.scale = (0.1, 250.0, 0.35)\n");
             sb.append("bpy.ops.object.transform_apply(scale=True)\n");
             sb.append("guardrail.data.materials.append(mat_guard)\n\n");
 
-            sb.append("# Guardrail Support Posts spaced along the barrier\n");
-            sb.append("for py in range(-15, 35, 4):\n");
-            sb.append("    bpy.ops.mesh.primitive_cube_add(size=1, location=(2.25, py, 0.28))\n");
-            sb.append("    post = bpy.context.active_object\n");
-            sb.append("    post.scale = (0.08, 0.08, 0.55)\n");
-            sb.append("    bpy.ops.object.transform_apply(scale=True)\n");
-            sb.append("    post.data.materials.append(mat_guard)\n\n");
+            sb.append("# RULES 3 & 4: MASTER ROOT EMPTY PARENTING, ROAD PLACEMENT & DRIVING ANIMATION\n");
+            sb.append("_root = bpy.data.objects.get('Model_Root')\n");
+            sb.append("if not _root:\n");
+            sb.append("    _root = bpy.data.objects.new('Model_Root', None)\n");
+            sb.append("    _root.empty_display_type = 'PLAIN_AXES'\n");
+            sb.append("    bpy.context.collection.objects.link(_root)\n");
+            sb.append("_root.animation_data_clear()\n");
+            sb.append("_root.location = (0.0, 0.0, 0.0)\n");
+            sb.append("_root.rotation_euler = (0.0, 0.0, 0.0)\n");
+            sb.append("_root.scale = (1.0, 1.0, 1.0)\n");
+            sb.append("bpy.context.view_layer.update()\n\n");
 
-            sb.append("# Automated Rigging: Wheel Spin Drivers & Ground Sensors (Shrinkwrap)\n");
-            sb.append("wheels = [obj for obj in bpy.data.objects if obj.type == 'MESH' and ('wheel' in obj.name.lower() or 'tire' in obj.name.lower() or 'rim' in obj.name.lower())]\n");
-            sb.append("chassis_obj = bpy.data.objects.get('Vehicle_Chassis')\n");
-            sb.append("if chassis_obj:\n");
-            sb.append("    # Fallback for imported vehicles where wheels have generic names\n");
-            sb.append("    if not wheels:\n");
-            sb.append("        mesh_candidates = [o for o in bpy.data.objects if o.type == 'MESH' and o != chassis_obj and o.name != 'Road_Surface' and o.name != 'Highway_Guardrail']\n");
-            sb.append("        if len(mesh_candidates) >= 4:\n");
-            sb.append("            mesh_candidates.sort(key=lambda o: (o.dimensions.x * o.dimensions.y * o.dimensions.z))\n");
-            sb.append("            wheels = mesh_candidates[:4]\n\n");
+            sb.append("_env_filter = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'dash', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'camera']\n");
+            sb.append("_car_objs = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_filter)]\n");
+            sb.append("for _co in _car_objs:\n");
+            sb.append("    _co.parent = _root\n");
+            sb.append("    _co.matrix_parent_inverse = _root.matrix_world.inverted()\n\n");
 
-            sb.append("    # Animate forward car translation across 60 frames\n");
-            sb.append("    chassis_obj.animation_data_create()\n");
-            sb.append("    chassis_obj.location = (0, -10.0, 0.7)\n");
-            sb.append("    chassis_obj.keyframe_insert(data_path='location', frame=1)\n");
-            sb.append("    chassis_obj.location = (0, 25.0, 0.7)\n");
-            sb.append("    chassis_obj.keyframe_insert(data_path='location', frame=60)\n");
-            sb.append("    for fcurve in chassis_obj.animation_data.action.fcurves:\n");
-            sb.append("        for kp in fcurve.keyframe_points:\n");
-            sb.append("            kp.interpolation = 'LINEAR'\n\n");
+            sb.append("# Placement & Driving: Start at Y=5.0 (frame 1), drive to Y=80.0 (frame 60) centered at X=0, flush at Z=0\n");
+            sb.append("bpy.context.scene.frame_start = 1\n");
+            sb.append("bpy.context.scene.frame_end = 60\n");
+            sb.append("_root.location = (0.0, 5.0, 0.0)\n");
+            sb.append("_root.keyframe_insert(data_path='location', frame=1)\n");
+            sb.append("_root.location = (0.0, 80.0, 0.0)\n");
+            sb.append("_root.keyframe_insert(data_path='location', frame=60)\n");
+            sb.append("if _root.animation_data and _root.animation_data.action:\n");
+            sb.append("    for _fc in _root.animation_data.action.fcurves:\n");
+            sb.append("        for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n\n");
 
-            sb.append("    # Parent wheels to chassis and compute angular velocity from displacement\n");
-            sb.append("    wheel_radius = 0.42\n");
-            sb.append("    for w in wheels:\n");
-            sb.append("        w.parent = chassis_obj\n");
-            sb.append("        w.matrix_parent_inverse = chassis_obj.matrix_world.inverted()\n");
-            sb.append("        # Wheel rotation keyframing (distance / radius)\n");
-            sb.append("        w.animation_data_create()\n");
-            sb.append("        w.rotation_euler = (0, 0, 0)\n");
-            sb.append("        w.keyframe_insert(data_path='rotation_euler', index=0, frame=1)\n");
-            sb.append("        # 35 meters displacement / 0.42m radius = 83.33 radians\n");
-            sb.append("        w.rotation_euler = (83.33, 0, 0)\n");
-            sb.append("        w.keyframe_insert(data_path='rotation_euler', index=0, frame=60)\n");
-            sb.append("        if w.animation_data and w.animation_data.action:\n");
-            sb.append("            for fc in w.animation_data.action.fcurves:\n");
-            sb.append("                for kp in fc.keyframe_points:\n");
-            sb.append("                    kp.interpolation = 'LINEAR'\n\n");
-
-            sb.append("        # Axle Ground Sensor (Shrinkwrap Projection constraint)\n");
-            sb.append("        sw_mod = w.constraints.new('SHRINKWRAP')\n");
-            sb.append("        sw_mod.target = road\n");
-            sb.append("        sw_mod.wrap_mode = 'PROJECT'\n");
-            sb.append("        sw_mod.project_axis = 'POS_Z'\n");
-            sb.append("        sw_mod.influence = 1.0\n");
+            sb.append("# Animate Wheel Spin around axles proportional to distance (75m displacement -> -214.28 rad)\n");
+            sb.append("_wheels = [o for o in _car_objs if any(wk in o.name.lower() for wk in ['wheel', 'tire', 'rim', 'tyre', 'disc'])]\n");
+            sb.append("for _wo in _wheels:\n");
+            sb.append("    _wo.rotation_mode = 'XYZ'\n");
+            sb.append("    _wo.animation_data_clear()\n");
+            sb.append("    _wo.rotation_euler.x = 0.0\n");
+            sb.append("    _wo.keyframe_insert(data_path='rotation_euler', frame=1)\n");
+            sb.append("    _wo.rotation_euler.x = -214.28\n");
+            sb.append("    _wo.keyframe_insert(data_path='rotation_euler', frame=60)\n");
+            sb.append("    if _wo.animation_data and _wo.animation_data.action:\n");
+            sb.append("        for _fc in _wo.animation_data.action.fcurves:\n");
+            sb.append("            for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n");
 
         } else if (sceneType.contains("nature") || sceneType.contains("outdoor") || sceneType.contains("villa")) {
             sb.append("# Ambient Ground Plane\n");
@@ -489,18 +499,14 @@ public class BlenderWorkerAgent {
     }
 
     /**
-     * Builds Worker 3: Cinematics, Low Ground-Clearance Tracking Camera,
-     * Golden-Hour Sun Lighting, 180-deg Optical Motion Blur, AgX Color Management,
-     * and MP4 Video Rendering.
+     * Builds Worker 3: Cinematics, Low 3/4 Front Angle Tracking Camera moving with the car down the highway (Rule 5),
+     * Golden-Hour Sun Lighting, 180-deg Optical Motion Blur, AgX Color Management, and MP4 Video Rendering.
      */
     private static String buildWorker3LightingAndRenderScript(AIDirectorSpec spec) {
         StringBuilder sb = new StringBuilder();
         int seed = (spec != null) ? spec.getSeedLighting() : 202;
         sb.append("random.seed(").append(seed).append(")\n\n");
 
-        float focalLength = (spec != null && spec.getFocalLengthMm() > 0) ? spec.getFocalLengthMm() : 20.0f;
-        float focusDist = (spec != null && spec.getFocusDistance() > 0) ? spec.getFocusDistance() : 1.2f;
-        float fstop = (spec != null && spec.getApertureFStop() > 0) ? spec.getApertureFStop() : 2.8f;
         float sunIntensity = (spec != null && spec.getSunIntensity() > 0) ? spec.getSunIntensity() : 5.5f;
         float sunElevation = (spec != null) ? spec.getSunElevation() : 18.0f;
         float sunAzimuth = (spec != null) ? spec.getSunAzimuth() : -45.0f;
@@ -508,28 +514,35 @@ public class BlenderWorkerAgent {
         String sceneType = (spec != null && spec.getSceneType() != null) ? spec.getSceneType().toLowerCase() : "general";
         boolean isVehicle = sceneType.contains("vehicle") || sceneType.contains("car") || sceneType.contains("drive") || sceneType.contains("speed");
 
-        // Camera Setup
-        sb.append("# Cinematic Camera Setup\n");
+        // RULE 5: CINEMATIC TRACKING CAMERA SETUP
+        sb.append("# RULE 5: CINEMATIC CAMERA SETUP\n");
         sb.append("try:\n");
         sb.append("    cam_data = bpy.data.cameras.new('CinematicCamera')\n");
-        sb.append("    cam_data.lens = ").append(focalLength).append("\n");
+        sb.append("    cam_data.lens = 35.0\n");
+        sb.append("    cam_data.clip_end = 500.0\n");
         sb.append("    cam_data.dof.use_dof = True\n");
-        sb.append("    cam_data.dof.focus_distance = ").append(focusDist).append("\n");
-        sb.append("    cam_data.dof.aperture_fstop = ").append(fstop).append("\n");
+        sb.append("    cam_data.dof.aperture_fstop = 2.8\n");
         sb.append("    cam_obj = bpy.data.objects.new('Camera', cam_data)\n");
         sb.append("    bpy.context.collection.objects.link(cam_obj)\n");
         sb.append("    bpy.context.scene.camera = cam_obj\n\n");
 
         if (isVehicle) {
-            sb.append("    # Lock Camera to Vehicle Rear-Left Wheel Arch (Inches off ground, looking forward)\n");
-            sb.append("    chassis_obj = bpy.data.objects.get('Vehicle_Chassis')\n");
-            sb.append("    if chassis_obj:\n");
-            sb.append("        cam_obj.parent = chassis_obj\n");
-            sb.append("        cam_obj.location = (1.25, -2.1, 0.22)\n");
-            sb.append("        cam_obj.rotation_euler = (math.radians(82), 0, math.radians(-12))\n");
-            sb.append("    else:\n");
-            sb.append("        cam_obj.location = (1.25, -2.1, 0.22)\n");
-            sb.append("        cam_obj.rotation_euler = (math.radians(82), 0, math.radians(-12))\n");
+            sb.append("    # Place camera tracking car from low, dramatic 3/4 front angle moving with car down highway\n");
+            sb.append("    _root = bpy.data.objects.get('Model_Root')\n");
+            sb.append("    cam_obj.constraints.clear()\n");
+            sb.append("    cam_obj.animation_data_clear()\n");
+            sb.append("    if _root:\n");
+            sb.append("        _tt = cam_obj.constraints.new(type='TRACK_TO')\n");
+            sb.append("        _tt.target = _root\n");
+            sb.append("        _tt.track_axis = 'TRACK_NEGATIVE_Z'\n");
+            sb.append("        _tt.up_axis = 'UP_Y'\n");
+            sb.append("    cam_obj.location = (-2.8, 10.5, 0.95)\n");
+            sb.append("    cam_obj.keyframe_insert(data_path='location', frame=1)\n");
+            sb.append("    cam_obj.location = (-2.8, 85.5, 0.95)\n");
+            sb.append("    cam_obj.keyframe_insert(data_path='location', frame=60)\n");
+            sb.append("    if cam_obj.animation_data and cam_obj.animation_data.action:\n");
+            sb.append("        for _fc in cam_obj.animation_data.action.fcurves:\n");
+            sb.append("            for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n");
         } else {
             float[] camPos = (spec != null && spec.getCameraPosition() != null && spec.getCameraPosition().length >= 3)
                     ? spec.getCameraPosition() : new float[]{0.0f, -8.5f, 3.8f};
