@@ -262,7 +262,7 @@ jobs:
 
           # Auto-Repair 13: Fix Background shader socket name ('Color' -> 'Background')
           bpy_script = re.sub(r"(\.outputs\[['\"])Color(['\"]\]\s*,\s*[^,\n]*?inputs\[['\"])Surface(['\"]\])", r"\1Background\2Surface\3", bpy_script)
-          bpy_script = re.sub(r"(bg(?:_node)?\.outputs\[['\"])Color(['\"]\])", r"\1Background\2", bpy_script)
+          bpy_script = re.sub(r"(bg(?:_node)?\\.outputs\[['\"])Color(['\"]\])", r"\1Background\2", bpy_script)
 
           # Auto-Repair 14: Neutralize read-only sequencer_colorspace_settings assignment
           bpy_script = re.sub(r"^[ \t]*.*?\.sequencer_colorspace_settings\s*=.*$", "pass", bpy_script, flags=re.MULTILINE)
@@ -328,6 +328,59 @@ jobs:
               flags=re.MULTILINE
           )
           bpy_script = bpy_script.replace("get_devices()", "(bpy.context.preferences.addons['cycles'].preferences.get_devices() or [])")
+
+          # Auto-Repair 26: Fix hallucinated nodes.ShaderNode* direct constructors
+          def fix_shader_node_constructor(m):
+              nodes_var = m.group(1)
+              node_type = m.group(2)
+              args = m.group(3).strip()
+              loc_match = re.search(r'location\s*=\s*(\([^)]+\))', args)
+              if loc_match:
+                  loc = loc_match.group(1)
+                  return f"({nodes_var}.new(type='{node_type}'), setattr({nodes_var}.new(type='{node_type}'), 'location', {loc}))[0]"
+              return f"{nodes_var}.new(type='{node_type}')"
+
+          bpy_script = re.sub(
+              r"([a-zA-Z0-9_]*nodes?)\.(ShaderNode[A-Za-z0-9_]+)\(([^)]*)\)",
+              fix_shader_node_constructor,
+              bpy_script
+          )
+
+          # Auto-Repair 27: Road & Lane Marking Ground Clamping
+          road_clamp_snippet = (
+              "\n\n# Road & Lane Marking Ground Clamping\n"
+              "try:\n"
+              "    for _o in list(bpy.data.objects):\n"
+              "        if _o.type == 'MESH':\n"
+              "            _n = _o.name.lower()\n"
+              "            if any(_k in _n for _k in ['stripe', 'lane', 'marking', 'dash']):\n"
+              "                _o.location.z = 0.005\n"
+              "                _o.rotation_euler.x = 0.0\n"
+              "                _o.rotation_euler.y = 0.0\n"
+              "            elif any(_k in _n for _k in ['road', 'highway', 'asphalt']):\n"
+              "                _o.location.z = 0.0\n"
+              "                _o.rotation_euler.x = 0.0\n"
+              "                _o.rotation_euler.y = 0.0\n"
+              "except Exception as _rc_err: print(f'Road clamp note: {_rc_err}')\n"
+          )
+          bpy_script += road_clamp_snippet
+
+          # Auto-Repair 28: Master Root Parenting for Imported Models
+          root_parent_snippet = (
+              "\n\n# Master Root Parenting for Imported Models\n"
+              "try:\n"
+              "    _root = bpy.data.objects.get('Model_Root')\n"
+              "    if not _root:\n"
+              "        _root = bpy.data.objects.get('Car_Root')\n"
+              "    if _root:\n"
+              "        for _o in list(bpy.data.objects):\n"
+              "            if _o.type == 'MESH' and not _o.parent and _o != _root:\n"
+              "                _n = _o.name.lower()\n"
+              "                if not any(_k in _n for _k in ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'camera', 'light']):\n"
+              "                    _o.parent = _root\n"
+              "except Exception as _rp_err: print(f'Root parenting note: {_rp_err}')\n"
+          )
+          bpy_script += root_parent_snippet
 
           # Auto-Repair 10: Ensure standard GLTF/GLB export exists with baked modifiers
           if 'export_scene.gltf' not in bpy_script:
