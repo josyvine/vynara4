@@ -164,7 +164,7 @@ public class AIOrchestrator {
                                 dispatchDynamicScriptWriter(request.getUserPrompt(), request.getStyle(), directorSpec, activeModelPath, new GeminiApiClient.ApiCallback<String>() {
                                     @Override
                                     public void onSuccess(String dynamicBpyCode) {
-                                        // Phase 3: Local Safety Wrapper with Assembly-Wide Scale Normalizer and Animation-Safe GLB Export
+                                        // Phase 3: Local Safety Wrapper with Assembly-Wide Scale Normalizer, Highway Alignment, and Animation Rig
                                         String finalMasterScript = wrapDynamicScriptWithSafety(dynamicBpyCode, directorSpec, activeModelPath);
 
                                         for (TaskNode node : plan.getTaskGraph().getAllNodes()) {
@@ -232,45 +232,49 @@ public class AIOrchestrator {
         sysInstBuilder.append("1. Output ONLY executable Python code inside a single ```python code block. No explanations outside the block.\n");
 
         if (hasImportedModel) {
-            sysInstBuilder.append("2. CRITICAL - USER IMPORTED 3D ASSET DETECTED:\n");
-            sysInstBuilder.append("   - The user has already provided the primary 3D model. The runner auto-normalizes uploaded models into 'inputs/input_model.glb'.\n");
-            sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE MAIN SUBJECT. The geometry already exists!\n");
-            sysInstBuilder.append("   - STEP 1: Import the model using the following fault-tolerant import block:\n");
-            sysInstBuilder.append("     import os, bpy, mathutils\n");
-            sysInstBuilder.append("     _before = set(bpy.data.objects)\n");
-            sysInstBuilder.append("     if os.path.exists('inputs/input_model.glb'):\n");
-            sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
-            sysInstBuilder.append("     elif os.path.exists('input_model.glb'):\n");
-            sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='input_model.glb')\n");
-            sysInstBuilder.append("     elif os.path.exists('inputs/input_model").append(modelExt).append("'):\n");
+            sysInstBuilder.append("2. CRITICAL - USER IMPORTED CAR MODEL DETECTED:\n");
+            sysInstBuilder.append("   - The runner normalizes uploaded models as 'inputs/input_model.glb'.\n");
+            sysInstBuilder.append("   - DO NOT GENERATE MESH PRIMITIVES (CUBES, CYLINDERS, SPHERES) FOR THE CAR BODY. The geometry already exists!\n");
+            sysInstBuilder.append("   - STRICT SPATIAL & ANIMATION RULES TO IMPLEMENT IN SCRIPT:\n");
+            sysInstBuilder.append("     RULE 1: CAR SCALE NORMALIZATION:\n");
+            sysInstBuilder.append("       Import the car file:\n");
+            sysInstBuilder.append("       import os, bpy, mathutils\n");
+            sysInstBuilder.append("       _before = set(bpy.data.objects)\n");
+            sysInstBuilder.append("       if os.path.exists('inputs/input_model.glb'):\n");
+            sysInstBuilder.append("           bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
+            sysInstBuilder.append("       elif os.path.exists('input_model.glb'):\n");
+            sysInstBuilder.append("           bpy.ops.import_scene.gltf(filepath='input_model.glb')\n");
+            sysInstBuilder.append("       elif os.path.exists('inputs/input_model").append(modelExt).append("'):\n");
             if (".fbx".equals(modelExt)) {
-                sysInstBuilder.append("         try:\n");
-                sysInstBuilder.append("             bpy.ops.import_scene.fbx(filepath='inputs/input_model.fbx')\n");
-                sysInstBuilder.append("         except Exception as fe:\n");
-                sysInstBuilder.append("             print(f'FBX import note: {fe}')\n");
+                sysInstBuilder.append("           try:\n");
+                sysInstBuilder.append("               bpy.ops.import_scene.fbx(filepath='inputs/input_model.fbx')\n");
+                sysInstBuilder.append("           except Exception as fe:\n");
+                sysInstBuilder.append("               print(f'FBX import note: {fe}')\n");
             } else if (".obj".equals(modelExt)) {
-                sysInstBuilder.append("         bpy.ops.wm.obj_import(filepath='inputs/input_model.obj')\n");
+                sysInstBuilder.append("           bpy.ops.wm.obj_import(filepath='inputs/input_model.obj')\n");
             } else {
-                sysInstBuilder.append("         bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
+                sysInstBuilder.append("           bpy.ops.import_scene.gltf(filepath='inputs/input_model.glb')\n");
             }
-            sysInstBuilder.append("     imported_objs = [o for o in bpy.data.objects if o not in _before and o.type == 'MESH']\n");
-            sysInstBuilder.append("   - STEP 2: MASTER ROOT EMPTY PARENTING (CRITICAL FOR ANIMATION):\n");
-            sysInstBuilder.append("     Create a master Empty object: root_empty = bpy.data.objects.new('Model_Root', None)\n");
-            sysInstBuilder.append("     root_empty.empty_display_type = 'PLAIN_AXES'\n");
-            sysInstBuilder.append("     bpy.context.collection.objects.link(root_empty)\n");
-            sysInstBuilder.append("     for obj in imported_objs:\n");
-            sysInstBuilder.append("         if not obj.parent:\n");
-            sysInstBuilder.append("             obj.parent = root_empty\n");
-            sysInstBuilder.append("   - STEP 3: MANDATORY DRIVING ANIMATION:\n");
-            sysInstBuilder.append("     Place `root_empty` on the road at location (0.0, 5.0, 0.0) at frame 1 and keyframe it.\n");
-            sysInstBuilder.append("     Keyframe `root_empty` driving forward along the road (Y axis): frame 1 at (0, 5, 0), frame 60 at (0, 80, 0)!\n");
-            sysInstBuilder.append("     root_empty.location = (0, 5, 0); root_empty.keyframe_insert(data_path='location', frame=1)\n");
-            sysInstBuilder.append("     root_empty.location = (0, 80, 0); root_empty.keyframe_insert(data_path='location', frame=60)\n");
-            sysInstBuilder.append("   - STEP 4: ROTATIONAL WHEEL SPIN:\n");
-            sysInstBuilder.append("     Search `imported_objs` for names containing 'wheel', 'tire', 'rim', 'tyre', 'disc'. For each wheel, insert keyframes rotating around its axle (X axis) proportional to distance: frame 1 rx=0, frame 60 rx=-110.0.\n");
-            sysInstBuilder.append("   - STEP 5: REAL-WORLD HIGHWAY ROAD CONTRACT:\n");
-            sysInstBuilder.append("     Create a realistic asphalt highway: a flat rectangular plane located at (0.0, 125.0, 0.0) with rotation (0, 0, 0), width = 14.0m (X axis), length = 250.0m (Y axis along the direction of travel).\n");
-            sysInstBuilder.append("     Add dashed center lane markings: width = 0.2m, length = 3.0m, spaced every 6.0m along Y from Y=0 to Y=250, clamped strictly to Z = 0.005 with normal vector pointing straight UP (0, 0, 1), rotation=(0, 0, 0). NEVER leave stripes tilted or floating in mid-air!\n");
+            sysInstBuilder.append("       imported_objs = [o for o in bpy.data.objects if o not in _before and o.type == 'MESH']\n");
+            sysInstBuilder.append("       Compute aggregate bounding box across all imported car meshes.\n");
+            sysInstBuilder.append("       Scale the entire car assembly down so its total length is exactly real-world automotive size: 4.5 meters. Apply all scale transforms.\n");
+            sysInstBuilder.append("     RULE 2: ROAD SCALE & ALIGNMENT:\n");
+            sysInstBuilder.append("       Build a realistic multi-lane asphalt highway plane that matches the 4.5m car.\n");
+            sysInstBuilder.append("       The road must be 14 meters wide (X axis) and at least 250 meters long (Y axis).\n");
+            sysInstBuilder.append("       It must lie flat on the ground at Z = 0.0, running straight along the Y-axis with rotation (0, 0, 0).\n");
+            sysInstBuilder.append("       Add center lane dashes at Z = 0.005 with normal pointing straight UP (0, 0, 1).\n");
+            sysInstBuilder.append("     RULE 3: PLACING CAR ON ROAD:\n");
+            sysInstBuilder.append("       Center the car in the driving lane at X = 0.0.\n");
+            sysInstBuilder.append("       Snap the bottom-most point of the tires to sit flush on top of the road surface at Z = 0.0.\n");
+            sysInstBuilder.append("       Start the car near the beginning of the road at Y = 5.0.\n");
+            sysInstBuilder.append("     RULE 4: PARENTING & DRIVING ANIMATION:\n");
+            sysInstBuilder.append("       Create a master Empty object at the car's base named 'Model_Root'.\n");
+            sysInstBuilder.append("       Parent all imported car sub-meshes to this 'Model_Root' (keeping their relative assembly offsets intact).\n");
+            sysInstBuilder.append("       Animate 'Model_Root' driving forward along the road (Y-axis) from Y = 5.0 at frame 1 to Y = 80.0 at frame 60 using location keyframes.\n");
+            sysInstBuilder.append("       Find all wheel/tire meshes and animate them spinning around their axles proportional to the driving speed.\n");
+            sysInstBuilder.append("     RULE 5: CINEMATIC CAMERA:\n");
+            sysInstBuilder.append("       Place a camera tracking the car from a low, dramatic, three-quarter front angle.\n");
+            sysInstBuilder.append("       Keyframe the camera moving with the car down the highway to create a high-speed cinematic sequence.\n");
         } else {
             sysInstBuilder.append("2. Construct real, detailed, multi-part 3D geometry matching the user's prompt (e.g., body, sub-parts, trim, walls, terrain, character anatomy).\n");
             sysInstBuilder.append("   NEVER generate a generic single cube, bevelled box, or placeholder. Build authentic multi-component structures.\n");
@@ -302,8 +306,11 @@ public class AIOrchestrator {
         promptBuilder.append("USER PROMPT: ").append(userPrompt).append("\n");
         promptBuilder.append("STYLE: ").append(style).append("\n");
         if (hasImportedModel) {
-            promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D model is normalized as 'inputs/input_model.glb'. ")
-                         .append("Import it, parent all meshes to 'Model_Root', place 'Model_Root' at (0, 5, 0), animate 'Model_Root' driving along Y (5 to 80m), animate wheel spin, build a full 14m x 250m highway at Z=0 with center lane dashes at Z=0.005, and rig lighting/cameras. Do not replace the model with cubes!\n");
+            promptBuilder.append("IMPORTED 3D ASSET STATUS: A user 3D car model is normalized as 'inputs/input_model.glb'. ")
+                         .append("Import it, normalize assembly scale to exactly 4.5m length, build a 14m x 250m highway at Z=0 with center lane dashes at Z=0.005, ")
+                         .append("snap tire bottoms flush to Z=0 at X=0 starting at Y=5.0, parent all sub-meshes to 'Model_Root', ")
+                         .append("animate 'Model_Root' driving from Y=5.0 (frame 1) to Y=80.0 (frame 60) with spinning wheels, ")
+                         .append("and rig a low 3/4 front tracking camera moving with the car down the highway. Do not replace the model with cubes!\n");
         }
         promptBuilder.append("DIRECTOR SPECIFICATION:\n");
         promptBuilder.append("- Scene Type: ").append(directorSpec.getSceneType()).append("\n");
@@ -345,7 +352,8 @@ public class AIOrchestrator {
 
     /**
      * Phase 3: Wraps Gemini's dynamic modeling script with headless scene initialization,
-     * cinematic camera/lighting, CPU-safe Cycles settings, AgX color management, and animation-safe GLB export.
+     * deterministic 5-rule vehicle normalization, road alignment, animation parenting,
+     * low 3/4 front cinematic camera rig, CPU-safe Cycles settings, AgX color management, and GLB export.
      */
     private String wrapDynamicScriptWithSafety(String dynamicCode, AIDirectorSpec spec, String importedModelPath) {
         StringBuilder sb = new StringBuilder();
@@ -380,15 +388,22 @@ public class AIOrchestrator {
         sb.append("# --- DYNAMIC AI MESH & SCENE GENERATION ---\n");
         sb.append(dynamicCode).append("\n\n");
 
-        sb.append("# --- ISOLATED VEHICLE SCALE NORMALIZATION ---\n");
+        sb.append("# =========================================================\n");
+        sb.append("# STRICT SPATIAL & ANIMATION RULES POST-PROCESS ENFORCEMENT\n");
+        sb.append("# =========================================================\n");
         sb.append("try:\n");
-        sb.append("    _root = bpy.data.objects.get('Model_Root') or bpy.data.objects.get('Car_Root')\n");
-        sb.append("    if _root:\n");
-        sb.append("        _car_meshes = [c for c in _root.children if c.type == 'MESH']\n");
-        sb.append("    else:\n");
-        sb.append("        _env_keys = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'cube']\n");
-        sb.append("        _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_keys)]\n");
+        sb.append("    bpy.context.scene.frame_set(1)\n");
+        sb.append("    _env_keys = ['road', 'highway', 'asphalt', 'ground', 'stripe', 'lane', 'marking', 'dash', 'guardrail', 'barrier', 'curb', 'sidewalk', 'terrain', 'plane', 'sky', 'light', 'lamp', 'camera']\n");
+        sb.append("    _car_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not any(k in o.name.lower() for k in _env_keys)]\n\n");
+
+        sb.append("    # 1. CAR SCALE NORMALIZATION & TIRE GROUND FLUSH\n");
         sb.append("    if _car_meshes:\n");
+        sb.append("        for _m in _car_meshes:\n");
+        sb.append("            if _m.parent:\n");
+        sb.append("                _mat = _m.matrix_world.copy()\n");
+        sb.append("                _m.parent = None\n");
+        sb.append("                _m.matrix_world = _mat\n\n");
+
         sb.append("        _min_x, _min_y, _min_z = float('inf'), float('inf'), float('inf')\n");
         sb.append("        _max_x, _max_y, _max_z = float('-inf'), float('-inf'), float('-inf')\n");
         sb.append("        for _m in _car_meshes:\n");
@@ -396,53 +411,130 @@ public class AIOrchestrator {
         sb.append("                _w = _m.matrix_world @ mathutils.Vector(_corner)\n");
         sb.append("                _min_x = min(_min_x, _w.x); _max_x = max(_max_x, _w.x)\n");
         sb.append("                _min_y = min(_min_y, _w.y); _max_y = max(_max_y, _w.y)\n");
-        sb.append("                _min_z = min(_min_z, _w.z); _max_z = max(_max_z, _w.z)\n");
-        sb.append("        _max_span = max(_max_x - _min_x, _max_y - _min_y, _max_z - _min_z)\n");
-        sb.append("        if _max_span > 10.0:\n");
-        sb.append("            _ratio = 4.5 / _max_span\n");
-        sb.append("            print(f'Normalizing vehicle assembly from {_max_span:.1f}m to 4.5m (ratio={_ratio:.5f})')\n");
+        sb.append("                _min_z = min(_min_z, _w.z); _max_z = max(_max_z, _w.z)\n\n");
+
+        sb.append("        _dim_x = _max_x - _min_x\n");
+        sb.append("        _dim_y = _max_y - _min_y\n");
+        sb.append("        _car_length = max(_dim_x, _dim_y)\n");
+        sb.append("        if _car_length > 0.001:\n");
+        sb.append("            _ratio = 4.5 / _car_length\n");
+        sb.append("            print(f'Vynara: Normalizing car length from {_car_length:.3f}m to 4.5m (ratio: {_ratio:.6f})')\n");
+        sb.append("            _center_x = (_min_x + _max_x) * 0.5\n");
+        sb.append("            _center_y = (_min_y + _max_y) * 0.5\n");
+        sb.append("            _bottom_z = _min_z\n");
         sb.append("            for _m in _car_meshes:\n");
+        sb.append("                _m.location.x = (_m.location.x - _center_x) * _ratio\n");
+        sb.append("                _m.location.y = (_m.location.y - _center_y) * _ratio\n");
+        sb.append("                _m.location.z = (_m.location.z - _bottom_z) * _ratio\n");
         sb.append("                _m.scale = (_m.scale.x * _ratio, _m.scale.y * _ratio, _m.scale.z * _ratio)\n");
         sb.append("                bpy.context.view_layer.objects.active = _m\n");
-        sb.append("                bpy.ops.object.transform_apply(scale=True)\n");
-        sb.append("except Exception as _sn_err: print(f'Scale normalizer note: {_sn_err}')\n\n");
+        sb.append("                bpy.ops.object.transform_apply(location=True, rotation=False, scale=True)\n\n");
 
-        sb.append("# --- ROAD & GROUND POST-PROCESS NORMALIZATION ---\n");
-        sb.append("try:\n");
+        sb.append("    # 2. ROAD SCALE & ALIGNMENT (14m wide x 250m long, Z=0.0, rotation (0,0,0))\n");
+        sb.append("    _road_obj = None\n");
         sb.append("    for _o in list(bpy.data.objects):\n");
-        sb.append("        if _o.type == 'MESH':\n");
-        sb.append("            _n = _o.name.lower()\n");
-        sb.append("            if any(_k in _n for _k in ['stripe', 'lane', 'marking', 'dash']):\n");
-        sb.append("                _o.location.z = 0.005\n");
-        sb.append("                _o.rotation_euler.x = 0.0\n");
-        sb.append("                _o.rotation_euler.y = 0.0\n");
-        sb.append("            elif any(_k in _n for _k in ['road', 'highway', 'asphalt']):\n");
-        sb.append("                _o.location.z = 0.0\n");
-        sb.append("                _o.rotation_euler.x = 0.0\n");
-        sb.append("                _o.rotation_euler.y = 0.0\n");
-        sb.append("                if _o.dimensions.x < 12.0: _o.dimensions.x = 14.0\n");
-        sb.append("                if _o.dimensions.y < 80.0: _o.dimensions.y = 250.0\n");
-        sb.append("except Exception as _norm_err: print(f'Road clamp note: {_norm_err}')\n\n");
+        sb.append("        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['road', 'highway', 'asphalt']):\n");
+        sb.append("            _road_obj = _o\n");
+        sb.append("            break\n");
+        sb.append("    if not _road_obj:\n");
+        sb.append("        bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0.0, 125.0, 0.0))\n");
+        sb.append("        _road_obj = bpy.context.active_object\n");
+        sb.append("        _road_obj.name = 'Highway_Road'\n");
+        sb.append("    _road_obj.location = (0.0, 125.0, 0.0)\n");
+        sb.append("    _road_obj.rotation_euler = (0.0, 0.0, 0.0)\n");
+        sb.append("    _road_obj.dimensions = (14.0, 250.0, 0.0)\n");
+        sb.append("    bpy.context.view_layer.objects.active = _road_obj\n");
+        sb.append("    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)\n\n");
 
-        sb.append("# --- CINEMATIC LIGHTING & CAMERA RIG ---\n");
-        float focalLength = (spec != null && spec.getFocalLengthMm() > 0) ? spec.getFocalLengthMm() : 50.0f;
-        float fstop = (spec != null && spec.getApertureFStop() > 0) ? spec.getApertureFStop() : 1.8f;
+        sb.append("    # Center lane dashes at Z = 0.005 with normal pointing straight UP (0, 0, 1)\n");
+        sb.append("    for _o in list(bpy.data.objects):\n");
+        sb.append("        if _o.type == 'MESH' and any(_k in _o.name.lower() for _k in ['stripe', 'lane', 'marking', 'dash']):\n");
+        sb.append("            bpy.data.objects.remove(_o, do_unlink=True)\n");
+        sb.append("    _dash_mat = bpy.data.materials.new(name='Lane_Marking_Mat')\n");
+        sb.append("    _dash_mat.use_nodes = True\n");
+        sb.append("    _dash_bsdf = _dash_mat.node_tree.nodes.get('Principled BSDF')\n");
+        sb.append("    if _dash_bsdf:\n");
+        sb.append("        _dash_bsdf.inputs['Base Color'].default_value = (1.0, 1.0, 1.0, 1.0)\n");
+        sb.append("        _dash_bsdf.inputs['Roughness'].default_value = 0.2\n");
+        sb.append("    for _y_idx in range(1, 40):\n");
+        sb.append("        _dash_y = _y_idx * 6.0\n");
+        sb.append("        if _dash_y > 245.0: break\n");
+        sb.append("        bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0.0, _dash_y, 0.005))\n");
+        sb.append("        _dash = bpy.context.active_object\n");
+        sb.append("        _dash.name = f'Lane_Dash_{_y_idx}'\n");
+        sb.append("        _dash.rotation_euler = (0.0, 0.0, 0.0)\n");
+        sb.append("        _dash.dimensions = (0.2, 3.0, 0.0)\n");
+        sb.append("        if _dash.data.materials:\n");
+        sb.append("            _dash.data.materials[0] = _dash_mat\n");
+        sb.append("        else:\n");
+        sb.append("            _dash.data.materials.append(_dash_mat)\n\n");
+
+        sb.append("    # 3 & 4. MASTER ROOT EMPTY PARENTING, PLACEMENT & DRIVING ANIMATION\n");
+        sb.append("    _root = bpy.data.objects.get('Model_Root')\n");
+        sb.append("    if not _root:\n");
+        sb.append("        _root = bpy.data.objects.new('Model_Root', None)\n");
+        sb.append("        _root.empty_display_type = 'PLAIN_AXES'\n");
+        sb.append("        bpy.context.collection.objects.link(_root)\n");
+        sb.append("    _root.animation_data_clear()\n");
+        sb.append("    _root.location = (0.0, 0.0, 0.0)\n");
+        sb.append("    _root.rotation_euler = (0.0, 0.0, 0.0)\n");
+        sb.append("    _root.scale = (1.0, 1.0, 1.0)\n");
+        sb.append("    bpy.context.view_layer.update()\n");
+        sb.append("    for _m in _car_meshes:\n");
+        sb.append("        _m.parent = _root\n");
+        sb.append("        _m.matrix_parent_inverse = _root.matrix_world.inverted()\n\n");
+
+        sb.append("    # Animate Model_Root driving forward: Y=5.0 at frame 1 to Y=80.0 at frame 60\n");
+        sb.append("    bpy.context.scene.frame_start = 1\n");
+        sb.append("    bpy.context.scene.frame_end = 60\n");
+        sb.append("    _root.location = (0.0, 5.0, 0.0)\n");
+        sb.append("    _root.keyframe_insert(data_path='location', frame=1)\n");
+        sb.append("    _root.location = (0.0, 80.0, 0.0)\n");
+        sb.append("    _root.keyframe_insert(data_path='location', frame=60)\n");
+        sb.append("    if _root.animation_data and _root.animation_data.action:\n");
+        sb.append("        for _fc in _root.animation_data.action.fcurves:\n");
+        sb.append("            for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n\n");
+
+        sb.append("    # Animate wheel spin around axle (distance = 75m, radius = 0.35m -> -214.28 rad)\n");
+        sb.append("    _wheel_keys = ['wheel', 'tire', 'rim', 'tyre', 'disc']\n");
+        sb.append("    _wheel_objs = [m for m in _car_meshes if any(wk in m.name.lower() for wk in _wheel_keys)]\n");
+        sb.append("    for _w_obj in _wheel_objs:\n");
+        sb.append("        _w_obj.rotation_mode = 'XYZ'\n");
+        sb.append("        _w_obj.animation_data_clear()\n");
+        sb.append("        _w_obj.rotation_euler.x = 0.0\n");
+        sb.append("        _w_obj.keyframe_insert(data_path='rotation_euler', frame=1)\n");
+        sb.append("        _w_obj.rotation_euler.x = -214.28\n");
+        sb.append("        _w_obj.keyframe_insert(data_path='rotation_euler', frame=60)\n");
+        sb.append("        if _w_obj.animation_data and _w_obj.animation_data.action:\n");
+        sb.append("            for _fc in _w_obj.animation_data.action.fcurves:\n");
+        sb.append("                for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n\n");
+
+        sb.append("    # 5. CINEMATIC CAMERA: Low dramatic 3/4 front angle tracking camera moving with car\n");
+        sb.append("    _cam_obj = bpy.context.scene.camera\n");
+        sb.append("    if not _cam_obj:\n");
+        sb.append("        _cam_data = bpy.data.cameras.new('CinematicCamera')\n");
+        sb.append("        _cam_obj = bpy.data.objects.new('CinematicCamera', _cam_data)\n");
+        sb.append("        bpy.context.collection.objects.link(_cam_obj)\n");
+        sb.append("        bpy.context.scene.camera = _cam_obj\n");
+        sb.append("    _cam_obj.data.lens = 35.0\n");
+        sb.append("    _cam_obj.data.clip_end = 500.0\n");
+        sb.append("    _cam_obj.constraints.clear()\n");
+        sb.append("    _cam_obj.animation_data_clear()\n");
+        sb.append("    _tt = _cam_obj.constraints.new(type='TRACK_TO')\n");
+        sb.append("    _tt.target = _root\n");
+        sb.append("    _tt.track_axis = 'TRACK_NEGATIVE_Z'\n");
+        sb.append("    _tt.up_axis = 'UP_Y'\n");
+        sb.append("    _cam_obj.location = (-2.8, 10.5, 0.95)\n");
+        sb.append("    _cam_obj.keyframe_insert(data_path='location', frame=1)\n");
+        sb.append("    _cam_obj.location = (-2.8, 85.5, 0.95)\n");
+        sb.append("    _cam_obj.keyframe_insert(data_path='location', frame=60)\n");
+        sb.append("    if _cam_obj.animation_data and _cam_obj.animation_data.action:\n");
+        sb.append("        for _fc in _cam_obj.animation_data.action.fcurves:\n");
+        sb.append("            for _kp in _fc.keyframe_points: _kp.interpolation = 'LINEAR'\n");
+        sb.append("except Exception as _post_err: print(f'Spatial post-process note: {_post_err}')\n\n");
+
+        sb.append("# --- CINEMATIC LIGHTING ---\n");
         float sunIntensity = (spec != null && spec.getSunIntensity() > 0) ? spec.getSunIntensity() : 4.5f;
-        float[] camPos = (spec != null && spec.getCameraPosition() != null && spec.getCameraPosition().length >= 3)
-                ? spec.getCameraPosition() : new float[]{0.0f, -8.0f, 3.5f};
-
-        sb.append("try:\n");
-        sb.append("    if not bpy.context.scene.camera:\n");
-        sb.append("        cam_data = bpy.data.cameras.new('CinematicCamera')\n");
-        sb.append("        cam_data.lens = ").append(focalLength).append("\n");
-        sb.append("        cam_data.dof.use_dof = True\n");
-        sb.append("        cam_data.dof.aperture_fstop = ").append(fstop).append("\n");
-        sb.append("        cam_obj = bpy.data.objects.new('Camera', cam_data)\n");
-        sb.append("        bpy.context.collection.objects.link(cam_obj)\n");
-        sb.append("        bpy.context.scene.camera = cam_obj\n");
-        sb.append("        cam_obj.location = (").append(camPos[0]).append(", ").append(camPos[1]).append(", ").append(camPos[2]).append(")\n");
-        sb.append("        cam_obj.rotation_euler = (math.radians(72), 0, 0)\n");
-        sb.append("except Exception as ce: print(f'Camera setup note: {ce}')\n\n");
 
         sb.append("try:\n");
         sb.append("    sun_data = bpy.data.lights.new('Sun', type='SUN')\n");
